@@ -15,6 +15,9 @@
  */
 package com.android.server.wifi;
 
+import static com.android.server.wifi.util.GeneralUtil.getCapabilityIndex;
+import static com.android.server.wifi.util.GeneralUtil.longToBitset;
+
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -35,6 +38,7 @@ import static org.mockito.Mockito.when;
 
 import android.app.test.MockAnswerUtil.AnswerWithArguments;
 import android.content.Context;
+import android.hardware.wifi.common.OuiKeyedData;
 import android.hardware.wifi.supplicant.GroupCipherMask;
 import android.hardware.wifi.supplicant.GsmRand;
 import android.hardware.wifi.supplicant.ISupplicantStaNetwork;
@@ -53,6 +57,7 @@ import android.net.wifi.SecurityParams;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiEnterpriseConfig;
 import android.net.wifi.WifiManager;
+import android.os.PersistableBundle;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.text.TextUtils;
@@ -74,6 +79,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
 
@@ -101,8 +107,8 @@ public class SupplicantStaNetworkHalAidlImplTest extends WifiBaseTest {
     @Mock private Context mContext;
     @Mock private WifiMonitor mWifiMonitor;
     @Mock private WifiGlobals mWifiGlobals;
-    private long mAdvanceKeyMgmtFeatures = 0;
-    private long mWpaDriverFeatures = 0;
+    private BitSet mAdvanceKeyMgmtFeatures = new BitSet();
+    private BitSet mWpaDriverFeatures = new BitSet();
 
     private SupplicantNetworkVariables mSupplicantVariables;
     private MockResources mResources;
@@ -119,7 +125,7 @@ public class SupplicantStaNetworkHalAidlImplTest extends WifiBaseTest {
         when(mWifiGlobals.isWpa3SaeUpgradeOffloadEnabled()).thenReturn(true);
         when(mWifiGlobals.isWpaPersonalDeprecated()).thenReturn(false);
 
-        mAdvanceKeyMgmtFeatures |= WifiManager.WIFI_FEATURE_WPA3_SUITE_B;
+        mAdvanceKeyMgmtFeatures.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_WPA3_SUITE_B));
         mSupplicantNetwork = new SupplicantStaNetworkHalAidlImpl(1,
                 mISupplicantStaNetworkMock, IFACE_NAME, mContext, mWifiMonitor,
                 mWifiGlobals, mAdvanceKeyMgmtFeatures, mWpaDriverFeatures);
@@ -1190,7 +1196,7 @@ public class SupplicantStaNetworkHalAidlImplTest extends WifiBaseTest {
     @Test
     public void testSupportedCiphersNoGcmp256() throws Exception {
         // Reinitialize mSupplicantNetwork without support for WPA3 SUITE-B
-        mAdvanceKeyMgmtFeatures = 0;
+        mAdvanceKeyMgmtFeatures.clear();
         mSupplicantNetwork = new SupplicantStaNetworkHalAidlImpl(1,
                 mISupplicantStaNetworkMock, IFACE_NAME, mContext, mWifiMonitor,
                 mWifiGlobals, mAdvanceKeyMgmtFeatures, mWpaDriverFeatures);
@@ -1326,7 +1332,7 @@ public class SupplicantStaNetworkHalAidlImplTest extends WifiBaseTest {
         // Re-init mock to AIDL v2 without TLS v1.3 support.
         mSupplicantNetwork = new SupplicantStaNetworkHalAidlImpl(2,
                 mISupplicantStaNetworkMock, IFACE_NAME, mContext, mWifiMonitor,
-                mWifiGlobals, mAdvanceKeyMgmtFeatures, 0);
+                mWifiGlobals, mAdvanceKeyMgmtFeatures, mWpaDriverFeatures);
         WifiConfiguration config = WifiConfigurationTestUtil.createEapNetwork();
         config.enterpriseConfig.setMinimumTlsVersion(WifiEnterpriseConfig.TLS_V1_3);
         // Assume that the default params is used for this test.
@@ -1344,10 +1350,10 @@ public class SupplicantStaNetworkHalAidlImplTest extends WifiBaseTest {
     public void testEapMinimumTlsVersionWifiConfigurationSaveLoadWithAidlV2TlsV13Supported()
             throws Exception {
         // Re-init mock to AIDL v2 with TLS v1.3 support.
+        mWpaDriverFeatures = longToBitset(WifiManager.WIFI_FEATURE_TLS_V1_3);
         mSupplicantNetwork = new SupplicantStaNetworkHalAidlImpl(2,
                 mISupplicantStaNetworkMock, IFACE_NAME, mContext, mWifiMonitor,
-                mWifiGlobals, mAdvanceKeyMgmtFeatures,
-                WifiManager.WIFI_FEATURE_TLS_V1_3);
+                mWifiGlobals, mAdvanceKeyMgmtFeatures, mWpaDriverFeatures);
         WifiConfiguration config = WifiConfigurationTestUtil.createEapNetwork();
         config.enterpriseConfig.setMinimumTlsVersion(WifiEnterpriseConfig.TLS_V1_3);
         // Assume that the default params is used for this test.
@@ -1356,6 +1362,34 @@ public class SupplicantStaNetworkHalAidlImplTest extends WifiBaseTest {
         assertTrue(mSupplicantNetwork.saveWifiConfiguration(config));
         // Should set minimum TLS version to TLS v1.3
         verify(mISupplicantStaNetworkMock).setMinimumTlsVersionEapPhase1Param(TlsVersion.TLS_V1_3);
+    }
+
+    /**
+     * Tests that vendor data is sent to the HAL if included in the WifiConfiguration.
+     */
+    @Test
+    public void testSetVendorData() throws Exception {
+        // Re-initialize DUT to HAL service version 3
+        assumeTrue(SdkLevel.isAtLeastV());
+        mSupplicantNetwork = new SupplicantStaNetworkHalAidlImpl(3,
+                mISupplicantStaNetworkMock, IFACE_NAME, mContext, mWifiMonitor,
+                mWifiGlobals, mAdvanceKeyMgmtFeatures, mWpaDriverFeatures);
+
+        PersistableBundle bundle = new PersistableBundle();
+        bundle.putInt("intFieldKey", 1337);
+        android.net.wifi.OuiKeyedData ouiKeyedData =
+                new android.net.wifi.OuiKeyedData.Builder(0x00aabbcc, bundle).build();
+        List<android.net.wifi.OuiKeyedData> frameworkVendorData = Arrays.asList(ouiKeyedData);
+
+        WifiConfiguration config = WifiConfigurationTestUtil.createPskNetwork();
+        config.setVendorData(frameworkVendorData);
+        testWifiConfigurationSaveLoad(config);
+
+        verify(mISupplicantStaNetworkMock).setVendorData(any(OuiKeyedData[].class));
+        OuiKeyedData[] halVendorData = mSupplicantVariables.vendorData;
+        assertEquals(frameworkVendorData.size(), halVendorData.length);
+        assertEquals(frameworkVendorData.get(0).getOui(), halVendorData[0].oui);
+        assertTrue(frameworkVendorData.get(0).getData().equals(halVendorData[0].vendorData));
     }
 
     /**
@@ -1818,6 +1852,13 @@ public class SupplicantStaNetworkHalAidlImplTest extends WifiBaseTest {
                 mSupplicantVariables.selectedRcoi = selectedRcoi;
             }
         }).when(mISupplicantStaNetworkMock).setRoamingConsortiumSelection(any(byte[].class));
+
+        /** Vendor data */
+        doAnswer(new AnswerWithArguments() {
+            public void answer(OuiKeyedData[] vendorData) throws RemoteException {
+                mSupplicantVariables.vendorData = vendorData;
+            }
+        }).when(mISupplicantStaNetworkMock).setVendorData(any(OuiKeyedData[].class));
     }
 
     // Private class to to store/inspect values set via the AIDL mock.
@@ -1860,5 +1901,6 @@ public class SupplicantStaNetworkHalAidlImplTest extends WifiBaseTest {
         public boolean eapErp;
         public byte saeH2eMode;
         public byte[] selectedRcoi;
+        public OuiKeyedData[] vendorData;
     }
 }

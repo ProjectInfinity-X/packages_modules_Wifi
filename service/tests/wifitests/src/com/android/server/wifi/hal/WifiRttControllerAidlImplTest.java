@@ -38,6 +38,7 @@ import android.hardware.wifi.RttType;
 import android.hardware.wifi.WifiChannelWidthInMhz;
 import android.hardware.wifi.WifiInformationElement;
 import android.net.MacAddress;
+import android.net.wifi.ScanResult;
 import android.net.wifi.rtt.RangingRequest;
 import android.net.wifi.rtt.RangingResult;
 import android.net.wifi.rtt.ResponderConfig;
@@ -89,12 +90,48 @@ public class WifiRttControllerAidlImplTest extends WifiBaseTest {
     }
 
     /**
+     * Verify RTT burst duration with respect to different burst sizes.
+     */
+    @Test
+    public void testBurstDuration() throws Exception {
+        int cmdId = 55;
+        RangingRequest request = RttTestUtils.getDummyRangingRequestMcOnly((byte) 0, 8);
+        mDut.rangeRequest(cmdId, request);
+        verify(mIWifiRttControllerMock).rangeRequest(eq(cmdId), mRttConfigCaptor.capture());
+        RttConfig[] halRequest = mRttConfigCaptor.getValue();
+        RttConfig rttConfig = halRequest[0];
+        collector.checkThat("(1) Rtt burst size", rttConfig.numFramesPerBurst, equalTo(8));
+        collector.checkThat("(1) Rtt burst duration", rttConfig.burstDuration, equalTo(9));
+
+        cmdId = 56;
+        request = RttTestUtils.getDummyRangingRequestMcOnly((byte) 0, 20);
+        mDut.rangeRequest(cmdId, request);
+        verify(mIWifiRttControllerMock).rangeRequest(eq(cmdId), mRttConfigCaptor.capture());
+        halRequest = mRttConfigCaptor.getValue();
+        rttConfig = halRequest[0];
+        collector.checkThat("(2) Rtt burst size", rttConfig.numFramesPerBurst, equalTo(20));
+        collector.checkThat("(2) Rtt burst duration", rttConfig.burstDuration, equalTo(10));
+
+        cmdId = 57;
+        request = RttTestUtils.getDummyRangingRequestMcOnly((byte) 0, 30);
+        mDut.rangeRequest(cmdId, request);
+        verify(mIWifiRttControllerMock).rangeRequest(eq(cmdId), mRttConfigCaptor.capture());
+        halRequest = mRttConfigCaptor.getValue();
+        rttConfig = halRequest[0];
+        collector.checkThat("(3) Rtt burst size", rttConfig.numFramesPerBurst, equalTo(30));
+        collector.checkThat("(3) Rtt burst duration", rttConfig.burstDuration, equalTo(11));
+
+        verifyNoMoreInteractions(mIWifiRttControllerMock);
+
+    }
+
+    /**
      * Validate successful ranging flow.
      */
     @Test
     public void testRangeRequest() throws Exception {
         int cmdId = 55;
-        RangingRequest request = RttTestUtils.getDummyRangingRequest((byte) 0);
+        RangingRequest request = RttTestUtils.getDummyRangingRequestWith11az((byte) 0);
 
         // (1) issue range request
         mDut.rangeRequest(cmdId, request);
@@ -138,6 +175,22 @@ public class WifiRttControllerAidlImplTest extends WifiBaseTest {
         collector.checkThat("entry 2: rtt burst size", rttConfig.numFramesPerBurst,
                 equalTo(RangingRequest.getMaxRttBurstSize()));
 
+        rttConfig = halRequest[3];
+        collector.checkThat("entry 0: MAC", rttConfig.addr,
+                equalTo(MacAddress.fromString("00:11:22:33:44:00").toByteArray()));
+        collector.checkThat("entry 0: rtt type", rttConfig.type,
+                equalTo(RttType.TWO_SIDED_11AZ_NTB));
+        collector.checkThat("entry 0: peer type", rttConfig.peer, equalTo(RttPeerType.AP));
+        collector.checkThat("entry 0: lci", rttConfig.mustRequestLci, equalTo(true));
+        collector.checkThat("entry 0: lcr", rttConfig.mustRequestLcr, equalTo(true));
+        collector.checkThat("entry 0: rtt burst size", rttConfig.numFramesPerBurst,
+                equalTo(RangingRequest.getMaxRttBurstSize()));
+        // ntbMinMeasurementTime in units of 100 us
+        // DEFAULT_NTB_MIN_TIME_BETWEEN_MEASUREMENTS_MICROS = 250000 --> 2500 * 100 us
+        collector.checkThat("", rttConfig.ntbMinMeasurementTime, equalTo(2500L));
+        // ntbMaxMeasurementTime in units of 10 ms
+        // DEFAULT_NTB_MAX_TIME_BETWEEN_MEASUREMENTS_MICROS = 15000000 --> 1500 * 10 ms
+        collector.checkThat("", rttConfig.ntbMaxMeasurementTime, equalTo(1500L));
         verifyNoMoreInteractions(mIWifiRttControllerMock);
     }
 
@@ -286,6 +339,7 @@ public class WifiRttControllerAidlImplTest extends WifiBaseTest {
         res.status = RttStatus.SUCCESS;
         res.distanceInMm = 1500;
         res.timeStampInUs = 6000;
+        res.packetBw = RttBw.BW_80MHZ;
         results[0] = res;
 
         // (1) have the HAL call us with results
@@ -306,10 +360,68 @@ public class WifiRttControllerAidlImplTest extends WifiBaseTest {
                 equalTo(MacAddress.fromString("05:06:07:08:09:0A").toByteArray()));
         collector.checkThat("distanceCm", rttResult.getDistanceMm(), equalTo(1500));
         collector.checkThat("timestamp", rttResult.getRangingTimestampMillis(), equalTo(6L));
-
+        collector.checkThat("channelBw", rttResult.getMeasurementBandwidth(),
+                equalTo(ScanResult.CHANNEL_WIDTH_80MHZ));
         verifyNoMoreInteractions(mIWifiRttControllerMock);
     }
 
+    /**
+     * Validate correct 11az NTB result conversion from HAL to framework.
+     */
+    @Test
+    public void test11azNtbRangeResults() throws Exception {
+        int cmdId = 55;
+        RttResult[] results = new RttResult[1];
+        RttResult res = createRttResult();
+        res.type = RttType.TWO_SIDED_11AZ_NTB;
+        res.addr = MacAddress.byteAddrFromStringAddr("05:06:07:08:09:0A");
+        res.ntbMaxMeasurementTime = 10; // 10 * 10000 us = 100000 us
+        res.ntbMinMeasurementTime = 100; // 100 * 100 us = 10000 us
+        res.numRxSpatialStreams = 2;
+        res.numTxSpatialStreams = 3;
+        res.i2rTxLtfRepetitionCount = 3;
+        res.r2iTxLtfRepetitionCount = 2;
+        res.status = RttStatus.SUCCESS;
+        res.distanceInMm = 1500;
+        res.timeStampInUs = 6000;
+        res.packetBw = RttBw.BW_80MHZ;
+        results[0] = res;
+
+        // (1) have the HAL call us with results
+        mEventCallbackCaptor.getValue().onResults(cmdId, results);
+
+        // (2) verify call to framework
+        verify(mRangingResultsCallbackMock).onRangingResults(eq(cmdId), mRttResultCaptor.capture());
+
+        // verify contents of the framework results
+        List<RangingResult> rttR = mRttResultCaptor.getValue();
+
+        collector.checkThat("number of entries", rttR.size(), equalTo(1));
+
+        RangingResult rttResult = rttR.get(0);
+        collector.checkThat("Type", rttResult.is80211azNtbMeasurement(), equalTo(true));
+        collector.checkThat("status", rttResult.getStatus(),
+                equalTo(WifiRttController.FRAMEWORK_RTT_STATUS_SUCCESS));
+        collector.checkThat("mac", rttResult.getMacAddress().toByteArray(),
+                equalTo(MacAddress.fromString("05:06:07:08:09:0A").toByteArray()));
+        collector.checkThat("ntbMaxMeasurementTime",
+                rttResult.getMaxTimeBetweenNtbMeasurementsMicros(), equalTo(100000L));
+        collector.checkThat("ntbMinMeasurementTime",
+                rttResult.getMinTimeBetweenNtbMeasurementsMicros(), equalTo(10000L));
+        collector.checkThat("numRxSpatialStreams", rttResult.get80211azNumberOfRxSpatialStreams(),
+                equalTo(2));
+        collector.checkThat("numTxSpatialStreams", rttResult.get80211azNumberOfTxSpatialStreams(),
+                equalTo(3));
+        collector.checkThat("i2rTxLtfRepetitionCount",
+                rttResult.get80211azInitiatorTxLtfRepetitionsCount(), equalTo(3));
+        collector.checkThat("r2iTxLtfRepetitionCount",
+                rttResult.get80211azResponderTxLtfRepetitionsCount(), equalTo(2));
+        collector.checkThat("distanceCm", rttResult.getDistanceMm(), equalTo(1500));
+        collector.checkThat("timestamp", rttResult.getRangingTimestampMillis(), equalTo(6L));
+        collector.checkThat("channelBw", rttResult.getMeasurementBandwidth(),
+                equalTo(ScanResult.CHANNEL_WIDTH_80MHZ));
+        verifyNoMoreInteractions(mIWifiRttControllerMock);
+    }
     /**
      * Validate correct cleanup when a null array of results is provided by HAL.
      */
@@ -350,12 +462,20 @@ public class WifiRttControllerAidlImplTest extends WifiBaseTest {
     public void testRangingWithInvalidParameterCombination() throws Exception {
         int cmdId = 88;
         RangingRequest request = new RangingRequest.Builder().build();
-        ResponderConfig invalidConfig = new ResponderConfig(
-                MacAddress.fromString("08:09:08:07:06:88"), ResponderConfig.RESPONDER_AP, true,
-                ResponderConfig.CHANNEL_WIDTH_80MHZ, 0, 0, 0, ResponderConfig.PREAMBLE_HT);
-        ResponderConfig config = new ResponderConfig(
-                MacAddress.fromString("08:09:08:07:06:89"), ResponderConfig.RESPONDER_AP, true,
-                ResponderConfig.CHANNEL_WIDTH_80MHZ, 0, 0, 0, ResponderConfig.PREAMBLE_VHT);
+        ResponderConfig invalidConfig = new ResponderConfig.Builder()
+                .setMacAddress(MacAddress.fromString("08:09:08:07:06:88"))
+                .setResponderType(ResponderConfig.RESPONDER_AP)
+                .set80211mcSupported(true)
+                .setChannelWidth(ScanResult.CHANNEL_WIDTH_80MHZ)
+                .setPreamble(ScanResult.PREAMBLE_HT)
+                .build();
+        ResponderConfig config = new ResponderConfig.Builder()
+                .setMacAddress(MacAddress.fromString("08:09:08:07:06:89"))
+                .setResponderType(ResponderConfig.RESPONDER_AP)
+                .set80211mcSupported(true)
+                .setChannelWidth(ScanResult.CHANNEL_WIDTH_80MHZ)
+                .setPreamble(ScanResult.PREAMBLE_VHT)
+                .build();
 
         // Add a ResponderConfig with invalid parameter, should be ignored.
         request.mRttPeers.add(invalidConfig);
@@ -381,11 +501,14 @@ public class WifiRttControllerAidlImplTest extends WifiBaseTest {
         cap.lciSupported = true;
         cap.lcrSupported = true;
         cap.responderSupported = true; // unused
+        cap.ntbInitiatorSupported = true;
         cap.preambleSupport = RttPreamble.LEGACY | RttPreamble.HT | RttPreamble.VHT
                 | RttPreamble.HE;
+        cap.azPreambleSupport = cap.preambleSupport;
         cap.bwSupport =
                 RttBw.BW_5MHZ | RttBw.BW_10MHZ | RttBw.BW_20MHZ | RttBw.BW_40MHZ | RttBw.BW_80MHZ
                         | RttBw.BW_160MHZ;
+        cap.azBwSupport = cap.bwSupport;
         cap.mcVersion = 1; // unused
 
         return cap;

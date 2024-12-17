@@ -379,7 +379,8 @@ public class WifiNetworkSuggestionsManager {
             config.shared = false;
             config.allowAutojoin = isAutojoinEnabled;
             if (config.enterpriseConfig
-                    != null && config.enterpriseConfig.isAuthenticationSimBased()) {
+                    != null && config.enterpriseConfig.isAuthenticationSimBased()
+                    && !TextUtils.isEmpty(anonymousIdentity)) {
                 config.enterpriseConfig.setAnonymousIdentity(anonymousIdentity);
             }
             config.getNetworkSelectionStatus().setConnectChoice(connectChoice);
@@ -466,6 +467,7 @@ public class WifiNetworkSuggestionsManager {
     private boolean mIsLastUserApprovalUiDialog = false;
 
     private boolean mUserDataLoaded = false;
+    private boolean mIsDeviceShuttingDown = false;
 
     /**
      * Keep a set of packageNames which is treated as carrier provider.
@@ -708,7 +710,7 @@ public class WifiNetworkSuggestionsManager {
     private void saveToStore() {
         // Set the flag to let WifiConfigStore that we have new data to write.
         mHasNewDataToSerialize = true;
-        if (!mWifiConfigManager.saveToStore(true)) {
+        if (!mWifiConfigManager.saveToStore()) {
             Log.w(TAG, "Failed to save to store");
         }
     }
@@ -900,8 +902,9 @@ public class WifiNetworkSuggestionsManager {
             Log.e(TAG, "UID " + uid + " not visible to the current user");
             return WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_INTERNAL;
         }
-        if (!mUserDataLoaded) {
-            Log.e(TAG, "Add Network suggestion before boot complete is not allowed.");
+        if (!mUserDataLoaded || mIsDeviceShuttingDown) {
+            Log.e(TAG, "Add Network suggestion before boot complete or when device is "
+                    + "shutting down is not allowed.");
             return WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_INTERNAL;
         }
         if (networkSuggestions == null || networkSuggestions.isEmpty()) {
@@ -1392,8 +1395,9 @@ public class WifiNetworkSuggestionsManager {
             Log.e(TAG, "UID " + uid + " not visible to the current user");
             return WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_INTERNAL;
         }
-        if (!mUserDataLoaded) {
-            Log.e(TAG, "Remove Network suggestion before boot complete is not allowed.");
+        if (!mUserDataLoaded || mIsDeviceShuttingDown) {
+            Log.e(TAG, "Remove Network suggestion before boot complete or when device is "
+                    + "shutting down is not allowed.");
             return WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_INTERNAL;
         }
         if (networkSuggestions == null) {
@@ -1611,9 +1615,16 @@ public class WifiNetworkSuggestionsManager {
     }
 
     /**
-     * Get all user-approved Passpoint networks that include an SSID.
+     * Get all user-approved Passpoint networks from suggestion.
+     *
+     * @param requireSsid If true, this method will only return Passpoint suggestions that include
+     *     an SSID. If false, this method will return all Passpoint suggestions, including those
+     *     which do not include an SSID.
+     *     <p>Note: Passpoint SSIDs are recorded upon successful connection to a network. Having an
+     *     SSID indicates that a Passpoint network has connected since the last reboot.
      */
-    public List<WifiConfiguration> getAllPasspointScanOptimizationSuggestionNetworks() {
+    public List<WifiConfiguration> getAllPasspointScanOptimizationSuggestionNetworks(
+            boolean requireSsid) {
         List<WifiConfiguration> networks = new ArrayList<>();
         for (PerAppInfo info : mActiveNetworkSuggestionsPerApp.values()) {
             if (!info.isApproved()) {
@@ -1631,7 +1642,7 @@ public class WifiNetworkSuggestionsManager {
                 }
                 network.SSID = mWifiInjector.getPasspointManager()
                         .getMostRecentSsidForProfile(network.getPasspointUniqueId());
-                if (network.SSID == null) {
+                if (requireSsid && network.SSID == null) {
                     continue;
                 }
                 networks.add(network);
@@ -1935,13 +1946,6 @@ public class WifiNetworkSuggestionsManager {
      */
     public @NonNull List<WifiConfiguration> getWifiConfigForMatchedNetworkSuggestionsSharedWithUser(
             List<ScanResult> scanResults) {
-        // Create a temporary look-up table.
-        // As they are all single type configurations, they should have unique keys.
-        Map<String, WifiConfiguration> wifiConfigMap = new HashMap<>();
-        WifiConfigurationUtil.convertMultiTypeConfigsToLegacyConfigs(
-                mWifiConfigManager.getConfiguredNetworks(), true)
-                        .forEach(c -> wifiConfigMap.put(c.getProfileKey(), c));
-
         // Create a HashSet to avoid return multiple result for duplicate ScanResult.
         Set<String> networkKeys = new HashSet<>();
         List<WifiConfiguration> sharedWifiConfigs = new ArrayList<>();
@@ -1985,7 +1989,8 @@ public class WifiNetworkSuggestionsManager {
                         config, ewns.perAppInfo.packageName)) {
                     continue;
                 }
-                WifiConfiguration wCmWifiConfig = wifiConfigMap.get(config.getProfileKey());
+                WifiConfiguration wCmWifiConfig = mWifiConfigManager
+                        .getConfiguredNetwork(config.getProfileKey());
                 if (wCmWifiConfig == null) {
                     continue;
                 }
@@ -2736,6 +2741,11 @@ public class WifiNetworkSuggestionsManager {
         }
         for (ExtendedWifiNetworkSuggestion ewns : matchedSuggestionSet) {
             ewns.anonymousIdentity = config.enterpriseConfig.getAnonymousIdentity();
+            if (TextUtils.isEmpty(ewns.anonymousIdentity)) {
+                // Update WifiConfig with App set AnonymousIdentity
+                updateWifiConfigInWcmIfPresent(ewns.createInternalWifiConfiguration(
+                        mWifiCarrierInfoManager), ewns.perAppInfo.uid, ewns.perAppInfo.packageName);
+            }
         }
         saveToStore();
     }
@@ -2866,5 +2876,12 @@ public class WifiNetworkSuggestionsManager {
             addToScanResultMatchInfoMap(ewns);
         }
         saveToStore();
+    }
+
+    /**
+     * Handle device shut down
+     */
+    public void handleShutDown() {
+        mIsDeviceShuttingDown = true;
     }
 }

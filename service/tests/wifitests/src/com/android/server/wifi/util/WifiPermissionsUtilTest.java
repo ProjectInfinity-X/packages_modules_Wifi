@@ -770,8 +770,8 @@ public class WifiPermissionsUtilTest extends WifiBaseTest {
         codeUnderTest.enforceLocationPermission(TEST_PACKAGE_NAME, TEST_FEATURE_ID, mUid);
 
         // verify that checking FINE for legacy apps!
-        verify(mMockAppOps).noteOp(eq(AppOpsManager.OPSTR_FINE_LOCATION), anyInt(), anyString(),
-                any(), any());
+        verify(mMockAppOps).noteOpNoThrow(eq(AppOpsManager.OPSTR_FINE_LOCATION), anyInt(),
+                anyString(), any(), any());
     }
 
     /**
@@ -793,7 +793,8 @@ public class WifiPermissionsUtilTest extends WifiBaseTest {
         codeUnderTest.enableVerboseLogging(true);
         codeUnderTest.enforceLocationPermission(TEST_PACKAGE_NAME, TEST_FEATURE_ID, mUid);
         verify(mMockAppOps)
-                .noteOp(eq(AppOpsManager.OPSTR_FINE_LOCATION), anyInt(), anyString(), any(), any());
+                .noteOpNoThrow(eq(AppOpsManager.OPSTR_FINE_LOCATION), anyInt(), anyString(),
+                        any(), any());
     }
 
     /**
@@ -821,7 +822,7 @@ public class WifiPermissionsUtilTest extends WifiBaseTest {
         } catch (SecurityException e) {
             // empty
         }
-        verify(mMockAppOps, never()).noteOp(anyInt(), anyInt(), anyString());
+        verify(mMockAppOps, never()).noteOpNoThrow(anyInt(), anyInt(), anyString());
     }
 
     /**
@@ -866,52 +867,6 @@ public class WifiPermissionsUtilTest extends WifiBaseTest {
                 .thenReturn(PackageManager.PERMISSION_GRANTED);
         assertTrue(wifiPermissionsUtil.checkNetworkManagedProvisioningPermission(
                 MANAGED_PROFILE_UID));
-    }
-
-    /**
-     * Verifies the helper method exposed for checking SYSTERM_ALERT_WINDOW permission.
-     */
-    @Test
-    public void testCheckSystemAlertWindowPermissionWithModeDefaultAppOps() throws Exception {
-        setupMocks();
-        WifiPermissionsUtil wifiPermissionsUtil = new WifiPermissionsUtil(mMockPermissionsWrapper,
-                mMockContext, mMockUserManager, mWifiInjector);
-        wifiPermissionsUtil.enableVerboseLogging(true);
-
-        when(mMockAppOps.noteOp(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, MANAGED_PROFILE_UID,
-                TEST_PACKAGE_NAME, null, null))
-                .thenReturn(AppOpsManager.MODE_DEFAULT);
-        when(mMockPermissionsWrapper.getUidPermission(
-                Manifest.permission.SYSTEM_ALERT_WINDOW, MANAGED_PROFILE_UID))
-                .thenReturn(PackageManager.PERMISSION_DENIED);
-        assertFalse(wifiPermissionsUtil.checkSystemAlertWindowPermission(
-                MANAGED_PROFILE_UID, TEST_PACKAGE_NAME));
-
-        when(mMockAppOps.noteOp(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, MANAGED_PROFILE_UID,
-                TEST_PACKAGE_NAME, null, null))
-                .thenReturn(AppOpsManager.MODE_DEFAULT);
-        when(mMockPermissionsWrapper.getUidPermission(
-                Manifest.permission.SYSTEM_ALERT_WINDOW, MANAGED_PROFILE_UID))
-                .thenReturn(PackageManager.PERMISSION_GRANTED);
-        assertTrue(wifiPermissionsUtil.checkSystemAlertWindowPermission(
-                MANAGED_PROFILE_UID, TEST_PACKAGE_NAME));
-    }
-
-    /**
-     * Verifies the helper method exposed for checking SYSTERM_ALERT_WINDOW permission.
-     */
-    @Test
-    public void testCheckSystemAlertWindowPermissionWithModeAllowedAppOps() throws Exception {
-        setupMocks();
-        WifiPermissionsUtil wifiPermissionsUtil = new WifiPermissionsUtil(mMockPermissionsWrapper,
-                mMockContext, mMockUserManager, mWifiInjector);
-        wifiPermissionsUtil.enableVerboseLogging(true);
-
-        when(mMockAppOps.noteOp(
-                AppOpsManager.OP_SYSTEM_ALERT_WINDOW, MANAGED_PROFILE_UID, TEST_PACKAGE_NAME))
-                .thenReturn(AppOpsManager.MODE_ALLOWED);
-        assertTrue(wifiPermissionsUtil.checkSystemAlertWindowPermission(
-                MANAGED_PROFILE_UID, TEST_PACKAGE_NAME));
     }
 
     /**
@@ -1186,8 +1141,8 @@ public class WifiPermissionsUtilTest extends WifiBaseTest {
 
         verify(mMockAppOps, never())
                 .unsafeCheckOp(AppOpsManager.OPSTR_FINE_LOCATION, mUid, TEST_PACKAGE_NAME);
-        verify(mMockAppOps).noteOp(AppOpsManager.OPSTR_FINE_LOCATION, mUid, TEST_PACKAGE_NAME,
-                TEST_FEATURE_ID, null);
+        verify(mMockAppOps).noteOpNoThrow(AppOpsManager.OPSTR_FINE_LOCATION, mUid,
+                TEST_PACKAGE_NAME, TEST_FEATURE_ID, null);
     }
 
     /**
@@ -1315,7 +1270,7 @@ public class WifiPermissionsUtilTest extends WifiBaseTest {
 
         verify(mMockAppOps).unsafeCheckOp(AppOpsManager.OPSTR_FINE_LOCATION, mUid,
                 TEST_PACKAGE_NAME);
-        verify(mMockAppOps, never()).noteOp(
+        verify(mMockAppOps, never()).noteOpNoThrow(
                 AppOpsManager.OPSTR_FINE_LOCATION, mUid, TEST_PACKAGE_NAME, null, null);
     }
 
@@ -1491,8 +1446,8 @@ public class WifiPermissionsUtilTest extends WifiBaseTest {
         codeUnderTest.enableVerboseLogging(true);
         codeUnderTest.enforceCanAccessScanResultsForWifiScanner(TEST_PACKAGE_NAME, TEST_FEATURE_ID,
                 mUid, IGNORE_LOCATION_SETTINGS, DONT_HIDE_FROM_APP_OPS);
-        verify(mMockAppOps).noteOp(AppOpsManager.OPSTR_FINE_LOCATION, mUid, TEST_PACKAGE_NAME,
-                TEST_FEATURE_ID, null);
+        verify(mMockAppOps).noteOpNoThrow(AppOpsManager.OPSTR_FINE_LOCATION, mUid,
+                TEST_PACKAGE_NAME, TEST_FEATURE_ID, null);
     }
 
     /**
@@ -1785,12 +1740,12 @@ public class WifiPermissionsUtilTest extends WifiBaseTest {
                 eq(GET_PERMISSIONS | MATCH_UNINSTALLED_PACKAGES))).thenReturn(
                         mPackagePermissionInfo);
         when(mMockContext.getPackageManager()).thenReturn(mMockPkgMgr);
-        when(mMockAppOps.noteOp(AppOpsManager.OPSTR_WIFI_SCAN, mUid, TEST_PACKAGE_NAME,
+        when(mMockAppOps.noteOpNoThrow(AppOpsManager.OPSTR_WIFI_SCAN, mUid, TEST_PACKAGE_NAME,
                 TEST_FEATURE_ID, null)).thenReturn(mWifiScanAllowApps);
-        when(mMockAppOps.noteOp(eq(AppOpsManager.OPSTR_COARSE_LOCATION), eq(mUid),
+        when(mMockAppOps.noteOpNoThrow(eq(AppOpsManager.OPSTR_COARSE_LOCATION), eq(mUid),
                 eq(TEST_PACKAGE_NAME), eq(TEST_FEATURE_ID), nullable(String.class)))
                 .thenReturn(mAllowCoarseLocationApps);
-        when(mMockAppOps.noteOp(eq(AppOpsManager.OPSTR_FINE_LOCATION), eq(mUid),
+        when(mMockAppOps.noteOpNoThrow(eq(AppOpsManager.OPSTR_FINE_LOCATION), eq(mUid),
                 eq(TEST_PACKAGE_NAME), eq(TEST_FEATURE_ID), nullable(String.class)))
                 .thenReturn(mAllowFineLocationApps);
         when(mMockAppOps.unsafeCheckOp(AppOpsManager.OPSTR_FINE_LOCATION, mUid, TEST_PACKAGE_NAME))
@@ -1875,8 +1830,8 @@ public class WifiPermissionsUtilTest extends WifiBaseTest {
         codeUnderTest.enableVerboseLogging(true);
         codeUnderTest.enforceCoarseLocationPermission(TEST_PACKAGE_NAME, TEST_FEATURE_ID, mUid);
         // verify that checking Coarse for apps!
-        verify(mMockAppOps).noteOp(eq(AppOpsManager.OPSTR_COARSE_LOCATION), anyInt(), anyString(),
-                any(), any());
+        verify(mMockAppOps).noteOpNoThrow(eq(AppOpsManager.OPSTR_COARSE_LOCATION), anyInt(),
+                anyString(), any(), any());
     }
 
     @Test

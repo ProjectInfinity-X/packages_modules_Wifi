@@ -151,10 +151,11 @@ public class ScanRequestProxyTest extends WifiBaseTest {
 
         // Scan throttling is enabled by default.
         when(mWifiSettingsConfigStore.get(eq(WIFI_SCAN_THROTTLE_ENABLED))).thenReturn(true);
+        WifiThreadRunner threadRunner = new WifiThreadRunner(new Handler(mLooper.getLooper()));
         mScanRequestProxy =
             new ScanRequestProxy(mContext, mAppOps, mActivityManager, mWifiInjector,
                     mWifiConfigManager, mWifiPermissionsUtil, mWifiMetrics, mClock,
-                    new Handler(mLooper.getLooper()), mWifiSettingsConfigStore);
+                    threadRunner, mWifiSettingsConfigStore);
         mScanRequestProxy.enableVerboseLogging(true);
         when(mScanResultsCallback.asBinder()).thenReturn(mBinder);
         when(mAnotherScanResultsCallback.asBinder()).thenReturn(mAnotherBinder);
@@ -313,6 +314,28 @@ public class ScanRequestProxyTest extends WifiBaseTest {
         validateScanSettings(mScanSettingsArgumentCaptor.getValue(), true);
 
         verifyScanMetricsDataWasSet();
+    }
+
+    @Test
+    public void testPartialScanIsCached() throws Exception {
+        mScanRequestProxy.registerScanResultsCallback(mScanResultsCallback);
+        // Make a scan request.
+        testStartScanSuccess();
+
+        // Verify scan requests cache is initially empty
+        assertEquals(0, mScanRequestProxy.getScanResults().size());
+
+        // Create scan data that only for 2.4 and 5 without DFS - not a full band scan.
+        WifiScanner.ScanData[] partialScanData =
+                ScanTestUtil.createScanDatas(new int[][]{{ 2417, 2427, 5180}},
+                        new int[]{0},
+                        new int[]{WifiScanner.WIFI_BAND_BOTH});
+
+        // Verify scan result available is not sent but cache is updated
+        mGlobalScanListenerArgumentCaptor.getValue().onResults(partialScanData);
+        mLooper.dispatchAll();
+        verify(mScanResultsCallback, never()).onScanResultsAvailable();
+        assertEquals(3, mScanRequestProxy.getScanResults().size());
     }
 
     /**
@@ -970,7 +993,7 @@ public class ScanRequestProxyTest extends WifiBaseTest {
      * internal scans.
      */
     @Test
-    public void testPartialInternalScanResultsDoesNotOverwritePreviousResults() throws Exception {
+    public void testPartialInternalScanResultsAppendToPreviousResults() throws Exception {
         enableScanning();
         // Make scan request 1.
         assertTrue(mScanRequestProxy.startScan(TEST_UID, TEST_PACKAGE_NAME_1));
@@ -980,6 +1003,7 @@ public class ScanRequestProxyTest extends WifiBaseTest {
         mLooper.dispatchAll();
         validateScanResultsAvailableBroadcastSent(true);
         // Validate the scan results in the cache.
+        int scanResultsSize = mScanRequestProxy.getScanResults().size();
         ScanTestUtil.assertScanResultsEqualsAnyOrder(
                 mTestScanDatas1[0].getResults(),
                 mScanRequestProxy.getScanResults().stream().toArray(ScanResult[]::new));
@@ -991,10 +1015,8 @@ public class ScanRequestProxyTest extends WifiBaseTest {
         // Verify the scan failure processing.
         mGlobalScanListenerArgumentCaptor.getValue().onResults(mTestScanDatas2);
         mLooper.dispatchAll();
-        // Validate the scan results from a previous successful scan in the cache.
-        ScanTestUtil.assertScanResultsEqualsAnyOrder(
-                mTestScanDatas1[0].getResults(),
-                mScanRequestProxy.getScanResults().stream().toArray(ScanResult[]::new));
+        // Validate the scan results get appended
+        assertTrue(mScanRequestProxy.getScanResults().size() > scanResultsSize);
 
         verifyScanMetricsDataWasSet();
     }

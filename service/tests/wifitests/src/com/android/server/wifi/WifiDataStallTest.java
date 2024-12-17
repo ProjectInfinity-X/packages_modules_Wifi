@@ -288,6 +288,23 @@ public class WifiDataStallTest extends WifiBaseTest {
                 WifiDataStall.CELLULAR_DATA_AVAILABLE);
     }
 
+    @Test
+    public void verifyGetThroughputPredictorSpeeds() throws Exception {
+        WifiDataStall.Speeds speeds;
+
+        speeds = mWifiDataStall.getThrouhgputPredictorSpeeds(mWifiInfo, mCapabilities);
+        assertEquals(150_000, speeds.DownstreamKbps);
+        assertEquals(50_000, speeds.UpstreamKbps);
+
+        speeds = mWifiDataStall.getThrouhgputPredictorSpeeds(null, mCapabilities);
+        assertEquals(WifiDataStall.INVALID_THROUGHPUT, speeds.DownstreamKbps);
+        assertEquals(WifiDataStall.INVALID_THROUGHPUT, speeds.UpstreamKbps);
+
+        speeds = mWifiDataStall.getThrouhgputPredictorSpeeds(mWifiInfo, null);
+        assertEquals(WifiDataStall.INVALID_THROUGHPUT, speeds.DownstreamKbps);
+        assertEquals(WifiDataStall.INVALID_THROUGHPUT, speeds.UpstreamKbps);
+    }
+
     /**
      * Verify throughput when Rx link speed is unavailable.
      * Also verify the logging of channel utilization and throughput.
@@ -640,13 +657,13 @@ public class WifiDataStallTest extends WifiBaseTest {
         // because it hits mLastTxBytes == 0 || mLastRxBytes == 0
         mWifiDataStall.checkDataStallAndThroughputSufficiency(TEST_IFACE_NAME,
                 mCapabilities, mOldLlStats, mNewLlStats, mWifiInfo, mTxBytes, mRxBytes);
-        verify(mWifiMetrics, times(1)).incrementConnectionDuration(
+        verify(mWifiMetrics, times(1)).incrementConnectionDuration(TEST_IFACE_NAME,
                 1000, true, true, TEST_RSSI, 960, 9609);
 
         // Expect 2nd throughput sufficiency check to return false
         mWifiDataStall.checkDataStallAndThroughputSufficiency(TEST_IFACE_NAME,
                 mCapabilities, mOldLlStats, mNewLlStats, mWifiInfo, mTxBytes, mRxBytes);
-        verify(mWifiMetrics, times(1)).incrementConnectionDuration(
+        verify(mWifiMetrics, times(1)).incrementConnectionDuration(TEST_IFACE_NAME,
                 1000, false, true, TEST_RSSI, 960, 9609);
 
         mNewLlStats.timeStampInMs = mOldLlStats.timeStampInMs + 2000;
@@ -655,7 +672,7 @@ public class WifiDataStallTest extends WifiBaseTest {
         assertEquals(false, mWifiDataStall.isCellularDataAvailable());
         mWifiDataStall.checkDataStallAndThroughputSufficiency(TEST_IFACE_NAME,
                 mCapabilities, mOldLlStats, mNewLlStats, mWifiInfo, mTxBytes, mRxBytes);
-        verify(mWifiMetrics, times(1)).incrementConnectionDuration(
+        verify(mWifiMetrics, times(1)).incrementConnectionDuration(TEST_IFACE_NAME,
                 2000, false, false, TEST_RSSI, 960, 9609);
 
         // Expect this update to be ignored by connection duration counters due to its
@@ -663,7 +680,7 @@ public class WifiDataStallTest extends WifiBaseTest {
         mNewLlStats.timeStampInMs = mOldLlStats.timeStampInMs + 10000;
         mWifiDataStall.checkDataStallAndThroughputSufficiency(TEST_IFACE_NAME,
                 mCapabilities, mOldLlStats, mNewLlStats, mWifiInfo, mTxBytes, mRxBytes);
-        verify(mWifiMetrics, never()).incrementConnectionDuration(
+        verify(mWifiMetrics, never()).incrementConnectionDuration(TEST_IFACE_NAME,
                 10000, false, false, TEST_RSSI, 960, 9609);
         setWifiEnabled(false);
     }

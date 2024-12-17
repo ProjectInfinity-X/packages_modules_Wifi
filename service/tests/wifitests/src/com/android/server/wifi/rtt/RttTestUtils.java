@@ -77,10 +77,41 @@ public class RttTestUtils {
     }
 
     /**
-     * Returns a placeholder ranging request with 2 requests:
+     * Returns a placeholder ranging request with 4 requests and a non-default in-range burst size:
      * - First: 802.11mc capable
+     * - Second: 802.11mc not capable
+     * - Third: Aware peer
+     * - Fourth: 802.11az & 802.11mc capable
      */
-    public static RangingRequest getDummyRangingRequestMcOnly(byte lastMacByte) {
+    public static RangingRequest getDummyRangingRequestWith11az(byte lastMacByte) {
+        RangingRequest.Builder builder = new RangingRequest.Builder();
+
+        ScanResult scan1 = new ScanResult();
+        scan1.BSSID = "00:01:02:03:04:" + String.format("%02d", lastMacByte);
+        scan1.setFlag(ScanResult.FLAG_80211mc_RESPONDER);
+        scan1.channelWidth = ScanResult.CHANNEL_WIDTH_40MHZ;
+        ScanResult scan2 = new ScanResult();
+        scan2.BSSID = "0A:0B:0C:0D:0E:" + String.format("%02d", lastMacByte);
+        scan2.channelWidth = ScanResult.CHANNEL_WIDTH_20MHZ;
+        MacAddress mac1 = MacAddress.fromString("08:09:08:07:06:05");
+
+        builder.addAccessPoint(scan1);
+        builder.addNon80211mcCapableAccessPoint(scan2);
+        // Changing default RTT burst size to a valid, but maximum, value
+        builder.setRttBurstSize(RangingRequest.getMaxRttBurstSize());
+        builder.addWifiAwarePeer(mac1);
+        // Add 11az & 11mc supported AP
+        scan1.BSSID = "00:11:22:33:44:" + String.format("%02d", lastMacByte);
+        scan1.setFlag(ScanResult.FLAG_80211mc_RESPONDER);
+        scan1.setFlag(ScanResult.FLAG_80211az_NTB_RESPONDER);
+        scan1.channelWidth = ScanResult.CHANNEL_WIDTH_40MHZ;
+        builder.addAccessPoint(scan1);
+        return builder.build();
+    }
+    /**
+     * Returns a placeholder ranging request with 11mc request with a specified burst size.
+     */
+    public static RangingRequest getDummyRangingRequestMcOnly(byte lastMacByte, int rttBurstSize) {
         RangingRequest.Builder builder = new RangingRequest.Builder();
 
         ScanResult scan1 = new ScanResult();
@@ -89,6 +120,7 @@ public class RttTestUtils {
         scan1.channelWidth = ScanResult.CHANNEL_WIDTH_40MHZ;
 
         builder.addAccessPoint(scan1);
+        builder.setRttBurstSize(rttBurstSize);
 
         return builder.build();
     }
@@ -127,37 +159,78 @@ public class RttTestUtils {
 
         if (request != null) {
             for (ResponderConfig peer : request.mRttPeers) {
-                RangingResult rangingResult;
-                halResults.add(new RangingResult(RangingResult.STATUS_SUCCESS,
-                        peer.macAddress, rangeCmBase, rangeStdDevCmBase, rssiBase,
-                        8, 5, null, null, null, rangeTimestampBase, true, 5180,
-                        ScanResult.CHANNEL_WIDTH_40MHZ));
+                halResults.add(new RangingResult.Builder()
+                        .setStatus(RangingResult.STATUS_SUCCESS)
+                        .setMacAddress(peer.getMacAddress())
+                        .setDistanceMm(rangeCmBase)
+                        .setDistanceStdDevMm(rangeStdDevCmBase)
+                        .setRssi(rssiBase)
+                        .setNumAttemptedMeasurements(8)
+                        .setNumSuccessfulMeasurements(5)
+                        .setRangingTimestampMillis(rangeTimestampBase)
+                        .set80211mcMeasurement(true)
+                        .setMeasurementChannelFrequencyMHz(5180)
+                        .setMeasurementBandwidth(ScanResult.CHANNEL_WIDTH_40MHZ)
+                        .build());
+                RangingResult.Builder builder = new RangingResult.Builder()
+                        .setStatus(RangingResult.STATUS_SUCCESS)
+                        .setDistanceMm(rangeCmBase++)
+                        .setDistanceStdDevMm(rangeStdDevCmBase++)
+                        .setRssi(rssiBase++)
+                        .setNumAttemptedMeasurements(8)
+                        .setNumSuccessfulMeasurements(5)
+                        .setRangingTimestampMillis(rangeTimestampBase++)
+                        .set80211mcMeasurement(true)
+                        .setMeasurementChannelFrequencyMHz(5180)
+                        .setMeasurementBandwidth(ScanResult.CHANNEL_WIDTH_40MHZ);
                 if (peer.peerHandle == null) {
-                    rangingResult = new RangingResult(RangingResult.STATUS_SUCCESS,
-                            peer.macAddress, rangeCmBase++, rangeStdDevCmBase++, rssiBase++,
-                            8, 5, null, null, null, rangeTimestampBase++, true, 5180,
-                            ScanResult.CHANNEL_WIDTH_40MHZ);
+                    builder.setMacAddress(peer.getMacAddress());
                 } else {
-                    rangingResult = new RangingResult(RangingResult.STATUS_SUCCESS,
-                            peer.peerHandle, rangeCmBase++, rangeStdDevCmBase++, rssiBase++,
-                            8, 5, null, null, null, rangeTimestampBase++);
+                    builder.setPeerHandle(peer.peerHandle);
                 }
+                RangingResult rangingResult = builder.build();
                 results.add(rangingResult);
-
             }
         } else {
-            results.add(new RangingResult(RangingResult.STATUS_SUCCESS,
-                    MacAddress.fromString("10:01:02:03:04:05"), rangeCmBase++,
-                    rangeStdDevCmBase++, rssiBase++, 8, 4, null, null,
-                    null, rangeTimestampBase++, true, 5180, ScanResult.CHANNEL_WIDTH_40MHZ));
-            results.add(new RangingResult(RangingResult.STATUS_SUCCESS,
-                    MacAddress.fromString("1A:0B:0C:0D:0E:0F"), rangeCmBase++,
-                    rangeStdDevCmBase++, rssiBase++, 9, 3, null, null,
-                    null, rangeTimestampBase++, true, 5180, ScanResult.CHANNEL_WIDTH_40MHZ));
-            results.add(new RangingResult(RangingResult.STATUS_SUCCESS,
-                    MacAddress.fromString("08:09:08:07:06:05"), rangeCmBase++,
-                    rangeStdDevCmBase++, rssiBase++, 10, 2, null, null,
-                    null, rangeTimestampBase++, true, 5180, ScanResult.CHANNEL_WIDTH_40MHZ));
+            results.add(new RangingResult.Builder()
+                    .setStatus(RangingResult.STATUS_SUCCESS)
+                    .setMacAddress(MacAddress.fromString("10:01:02:03:04:05"))
+                    .setDistanceMm(rangeCmBase++)
+                    .setDistanceStdDevMm(rangeStdDevCmBase++)
+                    .setRssi(rssiBase++)
+                    .setNumAttemptedMeasurements(8)
+                    .setNumSuccessfulMeasurements(4)
+                    .setRangingTimestampMillis(rangeTimestampBase++)
+                    .set80211mcMeasurement(true)
+                    .setMeasurementChannelFrequencyMHz(5180)
+                    .setMeasurementBandwidth(ScanResult.CHANNEL_WIDTH_40MHZ)
+                    .build());
+            results.add(new RangingResult.Builder()
+                    .setStatus(RangingResult.STATUS_SUCCESS)
+                    .setMacAddress(MacAddress.fromString("1A:0B:0C:0D:0E:0F"))
+                    .setDistanceMm(rangeCmBase++)
+                    .setDistanceStdDevMm(rangeStdDevCmBase++)
+                    .setRssi(rssiBase++)
+                    .setNumAttemptedMeasurements(9)
+                    .setNumSuccessfulMeasurements(3)
+                    .setRangingTimestampMillis(rangeTimestampBase++)
+                    .set80211mcMeasurement(true)
+                    .setMeasurementChannelFrequencyMHz(5180)
+                    .setMeasurementBandwidth(ScanResult.CHANNEL_WIDTH_40MHZ)
+                    .build());
+            results.add(new RangingResult.Builder()
+                    .setStatus(RangingResult.STATUS_SUCCESS)
+                    .setMacAddress(MacAddress.fromString("08:09:08:07:06:05"))
+                    .setDistanceMm(rangeCmBase++)
+                    .setDistanceStdDevMm(rangeStdDevCmBase++)
+                    .setRssi(rssiBase++)
+                    .setNumAttemptedMeasurements(10)
+                    .setNumSuccessfulMeasurements(2)
+                    .setRangingTimestampMillis(rangeTimestampBase++)
+                    .set80211mcMeasurement(true)
+                    .setMeasurementChannelFrequencyMHz(5180)
+                    .setMeasurementBandwidth(ScanResult.CHANNEL_WIDTH_40MHZ)
+                    .build());
             halResults.addAll(results);
         }
 

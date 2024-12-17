@@ -318,22 +318,21 @@ class SupplicantStaIfaceCallbackAidlImpl extends ISupplicantStaIfaceCallback.Stu
     }
 
     @Override
-    public void onDisconnected(byte[/* 6 */] bssid, boolean locallyGenerated, int reasonCode) {
+    public void onDisconnected(byte[/* 6 */] bssid, boolean locallyGenerated, int halReasonCode) {
         synchronized (mLock) {
             mStaIfaceHal.logCallback("onDisconnected");
             if (mStaIfaceHal.isVerboseLoggingEnabled()) {
                 Log.e(TAG, "onDisconnected state=" + mStateBeforeDisconnect
                         + " locallyGenerated=" + locallyGenerated
-                        + " reasonCode=" + reasonCode);
+                        + " reasonCode=" + halReasonCode);
             }
+            int reasonCode = halToFrameworkReasonCode(halReasonCode);
             WifiConfiguration curConfiguration =
                     mStaIfaceHal.getCurrentNetworkLocalConfig(mIfaceName);
             if (curConfiguration != null) {
                 if (mStateBeforeDisconnect == StaIfaceCallbackState.FOURWAY_HANDSHAKE
-                        && (WifiConfigurationUtil.isConfigForPskNetwork(curConfiguration)
-                        || WifiConfigurationUtil.isConfigForWapiPskNetwork(curConfiguration))
-                        && (!locallyGenerated || reasonCode
-                            != StaIfaceReasonCode.IE_IN_4WAY_DIFFERS)) {
+                        && NativeUtil.isEapol4WayHandshakeFailureDueToWrongPassword(
+                                curConfiguration, locallyGenerated, reasonCode)) {
                     mWifiMonitor.broadcastAuthenticationFailureEvent(
                             mIfaceName, WifiManager.ERROR_AUTH_FAILURE_WRONG_PSWD, -1,
                             mCurrentSsid, MacAddress.fromBytes(bssid));
@@ -345,7 +344,7 @@ class SupplicantStaIfaceCallbackAidlImpl extends ISupplicantStaIfaceCallback.Stu
                 }
             }
             mWifiMonitor.broadcastNetworkDisconnectionEvent(
-                    mIfaceName, locallyGenerated, halToFrameworkReasonCode(reasonCode),
+                    mIfaceName, locallyGenerated, reasonCode,
                     mCurrentSsid, NativeUtil.macAddressFromByteArray(bssid));
         }
     }
@@ -353,35 +352,39 @@ class SupplicantStaIfaceCallbackAidlImpl extends ISupplicantStaIfaceCallback.Stu
     private void handleAssocRejectEvent(AssocRejectEventInfo assocRejectInfo) {
         boolean isWrongPwd = false;
         WifiConfiguration curConfiguration = mStaIfaceHal.getCurrentNetworkLocalConfig(mIfaceName);
-        if (curConfiguration != null) {
-            if (!assocRejectInfo.timedOut) {
-                Log.d(TAG, "flush PMK cache due to association rejection for config id "
-                        + curConfiguration.networkId + ".");
-                mStaIfaceHal.removePmkCacheEntry(curConfiguration.networkId);
-            }
-            if (assocRejectInfo.statusCode
-                    == SupplicantStaIfaceHal.StaIfaceStatusCode.CHALLENGE_FAIL
-                    && WifiConfigurationUtil.isConfigForWepNetwork(curConfiguration)) {
-                mStaIfaceHal.logCallback("WEP incorrect password");
-                isWrongPwd = true;
-            } else if (assocRejectInfo.statusCode
-                    == SupplicantStaIfaceHal.StaIfaceStatusCode.UNSPECIFIED_FAILURE
-                    || assocRejectInfo.statusCode
-                    == SupplicantStaIfaceHal.StaIfaceStatusCode.CHALLENGE_FAIL) {
-                // Special handling for WPA3-Personal networks. If the password is
-                // incorrect, the AP will send association rejection, with status code 1
-                // (unspecified failure) or 15 (challenge fail). In SAE networks, the password
-                // authentication is not related to the 4-way handshake. In this case, we will
-                // send an authentication failure event up.
-                // Network Selection status is guaranteed to be initialized
-                SecurityParams params = curConfiguration.getNetworkSelectionStatus()
-                        .getCandidateSecurityParams();
-                if (params != null
-                        && params.getSecurityType() == WifiConfiguration.SECURITY_TYPE_SAE) {
-                    // If this is ever connected, the password should be correct.
-                    isWrongPwd = !curConfiguration.getNetworkSelectionStatus().hasEverConnected();
-                    if (isWrongPwd) {
+        if (curConfiguration != null && !assocRejectInfo.timedOut) {
+            int statusCode = assocRejectInfo.statusCode;
+            Log.d(TAG, "flush PMK cache due to association rejection for config id "
+                    + curConfiguration.networkId + ".");
+            mStaIfaceHal.removePmkCacheEntry(curConfiguration.networkId);
+            // Network Selection status is guaranteed to be initialized.
+            SecurityParams params = curConfiguration.getNetworkSelectionStatus()
+                    .getCandidateSecurityParams();
+            if (params != null) {
+                if (params.getSecurityType() == WifiConfiguration.SECURITY_TYPE_WEP
+                        && statusCode == SupplicantStaIfaceHal.StaIfaceStatusCode.CHALLENGE_FAIL) {
+                    mStaIfaceHal.logCallback("WEP incorrect password");
+                    isWrongPwd = true;
+                } else if (params.getSecurityType() == WifiConfiguration.SECURITY_TYPE_SAE) {
+                    // Special handling for WPA3-Personal networks. In SAE networks, the password
+                    // authentication is not related to the 4-way handshake. If the password is
+                    // incorrect, the HAL will send association rejection, with status code 1
+                    // (unspecified failure) or 15 (challenge fail).
+                    // As per IEEE80211-2020 specification section - 12.4.7.6, an SAE message that
+                    // was not successfully verified is indicated with a status code of 15. This
+                    // typically happens when the entered password is wrong. So treat status code
+                    // of 15 as incorrect password.
+                    // Some implementations also send status code of 1 for incorrect password. But
+                    // this is a generic status code and can't be treated as incorrect password all
+                    // the time. So treat status code of 1 as incorrect password only if the STA
+                    // was not connected to this network before. In this case, we will
+                    // send an authentication failure event up.
+                    if (statusCode == SupplicantStaIfaceHal.StaIfaceStatusCode.CHALLENGE_FAIL
+                            || (statusCode
+                            == SupplicantStaIfaceHal.StaIfaceStatusCode.UNSPECIFIED_FAILURE
+                            && !curConfiguration.getNetworkSelectionStatus().hasEverConnected())) {
                         mStaIfaceHal.logCallback("SAE incorrect password");
+                        isWrongPwd = true;
                     } else {
                         mStaIfaceHal.logCallback("SAE association rejection");
                     }
@@ -1229,6 +1232,9 @@ class SupplicantStaIfaceCallbackAidlImpl extends ISupplicantStaIfaceCallback.Stu
     @Override
     public void onNetworkNotFound(byte[] ssid) {
         mStaIfaceHal.logCallback("onNetworkNotFoundNotification");
+        if (mStaIfaceHal.shouldIgnoreNetworkNotFound(mIfaceName)) {
+            return;
+        }
         if (mStaIfaceHal.connectToFallbackSsid(mIfaceName)) {
             return;
         }

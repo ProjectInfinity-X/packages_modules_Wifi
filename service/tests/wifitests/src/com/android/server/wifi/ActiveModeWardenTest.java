@@ -16,6 +16,9 @@
 
 package com.android.server.wifi;
 
+import static android.net.wifi.WifiManager.SAP_START_FAILURE_GENERAL;
+import static android.net.wifi.WifiManager.WIFI_AP_STATE_FAILED;
+import static android.net.wifi.WifiManager.WIFI_STATE_DISABLING;
 import static android.net.wifi.WifiManager.WIFI_STATE_ENABLED;
 
 import static com.android.server.wifi.ActiveModeManager.ROLE_CLIENT_LOCAL_ONLY;
@@ -35,6 +38,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeTrue;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.argThat;
@@ -59,10 +63,8 @@ import static org.mockito.Mockito.when;
 
 import android.annotation.Nullable;
 import android.content.BroadcastReceiver;
-import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
-import android.content.res.Resources;
 import android.location.LocationManager;
 import android.net.MacAddress;
 import android.net.Network;
@@ -73,10 +75,13 @@ import android.net.wifi.SoftApCapability;
 import android.net.wifi.SoftApConfiguration;
 import android.net.wifi.SoftApConfiguration.Builder;
 import android.net.wifi.SoftApInfo;
+import android.net.wifi.SoftApState;
 import android.net.wifi.WifiClient;
 import android.net.wifi.WifiConfiguration;
+import android.net.wifi.WifiContext;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiScanner;
+import android.net.wifi.util.WifiResourceCache;
 import android.os.BatteryStatsManager;
 import android.os.Build;
 import android.os.IBinder;
@@ -118,6 +123,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -152,8 +158,8 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
     TestLooper mLooper;
     @Mock WifiInjector mWifiInjector;
-    @Mock Context mContext;
-    @Mock Resources mResources;
+    @Mock WifiContext mContext;
+    @Mock WifiResourceCache mWifiResourceCache;
     @Mock WifiNative mWifiNative;
     @Mock WifiApConfigStore mWifiApConfigStore;
     @Mock ConcreteClientModeManager mClientModeManager;
@@ -181,6 +187,9 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     @Mock LocalLog mLocalLog;
     @Mock WifiSettingsConfigStore mSettingsConfigStore;
     @Mock LastCallerInfoManager mLastCallerInfoManager;
+    @Mock WifiGlobals mWifiGlobals;
+    @Mock WifiConnectivityManager mWifiConnectivityManager;
+    @Mock WifiConfigManager mWifiConfigManager;
 
     Listener<ConcreteClientModeManager> mClientListener;
     Listener<SoftApManager> mSoftApListener;
@@ -213,18 +222,20 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mWifiInjector.getHalDeviceManager()).thenReturn(mHalDeviceManager);
         when(mWifiInjector.getUserManager()).thenReturn(mUserManager);
         when(mWifiInjector.getWifiHandlerLocalLog()).thenReturn(mLocalLog);
+        when(mWifiInjector.getWifiConnectivityManager()).thenReturn(mWifiConnectivityManager);
+        when(mWifiInjector.getWifiConfigManager()).thenReturn(mWifiConfigManager);
         when(mClientModeManager.getRole()).thenReturn(ROLE_CLIENT_PRIMARY);
         when(mClientModeManager.getInterfaceName()).thenReturn(WIFI_IFACE_NAME);
-        when(mContext.getResources()).thenReturn(mResources);
+        when(mContext.getResourceCache()).thenReturn(mWifiResourceCache);
         when(mSoftApManager.getRole()).thenReturn(ROLE_SOFTAP_TETHERED);
 
-        when(mResources.getString(R.string.wifi_localhotspot_configure_ssid_default))
+        when(mWifiResourceCache.getString(R.string.wifi_localhotspot_configure_ssid_default))
                 .thenReturn("AndroidShare");
-        when(mResources.getInteger(R.integer.config_wifi_framework_recovery_timeout_delay))
+        when(mWifiResourceCache.getInteger(R.integer.config_wifi_framework_recovery_timeout_delay))
                 .thenReturn(TEST_WIFI_RECOVERY_DELAY_MS);
-        when(mResources.getBoolean(R.bool.config_wifiScanHiddenNetworksScanOnlyMode))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiScanHiddenNetworksScanOnlyMode))
                 .thenReturn(false);
-        when(mResources.getBoolean(R.bool.config_wifi_turn_off_during_emergency_call))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifi_turn_off_during_emergency_call))
                 .thenReturn(true);
 
         when(mSettingsStore.isWifiToggleEnabled()).thenReturn(false);
@@ -239,6 +250,9 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mSettingsConfigStore.get(
                 eq(WIFI_NATIVE_SUPPORTED_STA_BANDS))).thenReturn(
                 TEST_SUPPORTED_BANDS);
+        // Default force that WPA Personal is deprecated since the feature set is opposite to the
+        // API value.
+        when(mWifiGlobals.isWpaPersonalDeprecated()).thenReturn(true);
         doAnswer(new Answer<ClientModeManager>() {
             public ClientModeManager answer(InvocationOnMock invocation) {
                 Object[] args = invocation.getArguments();
@@ -266,7 +280,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mLooper.dispatchAll();
 
         verify(mWifiMetrics).noteWifiEnabledDuringBoot(false);
-
+        verify(mWifiGlobals).setD2dStaConcurrencySupported(false);
         verify(mWifiNative).registerStatusListener(mStatusListenerCaptor.capture());
         verify(mWifiNative).initialize();
         mWifiNativeStatusListener = mStatusListenerCaptor.getValue();
@@ -310,12 +324,14 @@ public class ActiveModeWardenTest extends WifiBaseTest {
                 mWifiPermissionsUtil,
                 mWifiMetrics,
                 mExternalScoreUpdateObserverProxy,
-                mDppManager);
+                mDppManager,
+                mWifiGlobals);
         // SelfRecovery is created in WifiInjector after ActiveModeWarden, so getSelfRecovery()
         // returns null when constructing ActiveModeWarden.
         when(mWifiInjector.getSelfRecovery()).thenReturn(mSelfRecovery);
         when(mContext.getPackageManager()).thenReturn(mPackageManager);
         when(mPackageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_RTT)).thenReturn(true);
+        warden.setWifiStateForApiCalls(WIFI_STATE_ENABLED);
         return warden;
     }
 
@@ -349,13 +365,27 @@ public class ActiveModeWardenTest extends WifiBaseTest {
      * @param isClientModeSwitch true if switching from another mode, false if creating a new one
      */
     private void enterClientModeActiveState(boolean isClientModeSwitch) throws Exception {
+        enterClientModeActiveState(isClientModeSwitch, TEST_FEATURE_SET);
+    }
+
+    /**
+     * Helper method with tested feature set to enter the EnabledState and set ClientModeManager
+     * in ConnectMode.
+     *
+     * @param isClientModeSwitch true if switching from another mode, false if creating a new one
+     * @param testFeatureSet a customized feature set to test
+     */
+    private void enterClientModeActiveState(boolean isClientModeSwitch, long testFeatureSet)
+            throws Exception {
         String fromState = mActiveModeWarden.getCurrentMode();
         when(mSettingsStore.isWifiToggleEnabled()).thenReturn(true);
         mActiveModeWarden.wifiToggled(TEST_WORKSOURCE);
         mLooper.dispatchAll();
+        assertNull(mActiveModeWarden.getCurrentNetwork());
+
         when(mClientModeManager.getRole()).thenReturn(ROLE_CLIENT_PRIMARY);
         when(mClientModeManager.getCurrentNetwork()).thenReturn(mNetwork);
-        when(mWifiNative.getSupportedFeatureSet(WIFI_IFACE_NAME)).thenReturn(TEST_FEATURE_SET);
+        when(mWifiNative.getSupportedFeatureSet(WIFI_IFACE_NAME)).thenReturn(testFeatureSet);
         // ClientModeManager starts in SCAN_ONLY role.
         mClientListener.onRoleChanged(mClientModeManager);
         mLooper.dispatchAll();
@@ -376,10 +406,11 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         }
         verify(mClientModeManager, atLeastOnce()).getInterfaceName();
         verify(mWifiNative, atLeastOnce()).getSupportedFeatureSet(WIFI_IFACE_NAME);
-        assertEquals(TEST_FEATURE_SET, mActiveModeWarden.getSupportedFeatureSet());
+        assertEquals(testFeatureSet, mActiveModeWarden.getSupportedFeatureSet());
         verify(mScanRequestProxy, times(4)).enableScanning(true, true);
         assertEquals(mClientModeManager, mActiveModeWarden.getPrimaryClientModeManager());
         verify(mModeChangeCallback).onActiveModeManagerRoleChanged(mClientModeManager);
+        assertEquals(mNetwork, mActiveModeWarden.getCurrentNetwork());
     }
 
     private void enterScanOnlyModeActiveState() throws Exception {
@@ -431,7 +462,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     private void enterSoftApActiveMode() throws Exception {
         enterSoftApActiveMode(
                 new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_TETHERED, null,
-                mSoftApCapability, TEST_COUNTRYCODE));
+                mSoftApCapability, TEST_COUNTRYCODE, null));
     }
 
     private int mTimesCreatedSoftApManager = 1;
@@ -647,7 +678,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
      */
     @Test
     public void testScanOnlyModeScanHiddenNetworks() throws Exception {
-        when(mResources.getBoolean(R.bool.config_wifiScanHiddenNetworksScanOnlyMode))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiScanHiddenNetworksScanOnlyMode))
                 .thenReturn(true);
 
         mActiveModeWarden = createActiveModeWarden();
@@ -756,7 +787,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void testSwitchFromConnectModeToScanOnlyModeRemovesAdditionalCMMs() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
@@ -778,6 +809,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertTrue(currentCMMs.stream().anyMatch(cmm -> cmm.getRole() == ROLE_CLIENT_PRIMARY));
         assertTrue(currentCMMs.stream().anyMatch(
                 cmm -> cmm.getRole() == ROLE_CLIENT_SECONDARY_TRANSIENT));
+        verify(mWifiConnectivityManager, never()).resetOnWifiDisable();
 
         InOrder inOrder = inOrder(additionalClientModeManager, mClientModeManager);
         // disable wifi and switch primary CMM to scan only mode
@@ -792,6 +824,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         // mode
         inOrder.verify(additionalClientModeManager).stop();
         inOrder.verify(mClientModeManager).setRole(ROLE_CLIENT_SCAN_ONLY, INTERNAL_REQUESTOR_WS);
+        verify(mWifiConnectivityManager).resetOnWifiDisable();
     }
 
     /**
@@ -984,10 +1017,12 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         enterSoftApActiveMode();
 
         mSoftApListener.onStarted(mSoftApManager);
-        mSoftApManagerCallback.onStateChanged(WifiManager.WIFI_AP_STATE_ENABLED, 0);
+        SoftApState softApState = new SoftApState(
+                WifiManager.WIFI_AP_STATE_ENABLED, 0, null, null);
+        mSoftApManagerCallback.onStateChanged(softApState);
         mLooper.dispatchAll();
 
-        verify(mSoftApStateMachineCallback).onStateChanged(WifiManager.WIFI_AP_STATE_ENABLED, 0);
+        verify(mSoftApStateMachineCallback).onStateChanged(softApState);
     }
 
     /**
@@ -997,13 +1032,16 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     @Test
     public void doesntCallWifiServiceCallbackOnLOHSStateChanged() throws Exception {
         enterSoftApActiveMode(new SoftApModeConfiguration(
-                WifiManager.IFACE_IP_MODE_LOCAL_ONLY, null, mSoftApCapability, TEST_COUNTRYCODE));
+                WifiManager.IFACE_IP_MODE_LOCAL_ONLY, null, mSoftApCapability, TEST_COUNTRYCODE,
+                null));
 
         mSoftApListener.onStarted(mSoftApManager);
-        mSoftApManagerCallback.onStateChanged(WifiManager.WIFI_AP_STATE_ENABLED, 0);
+        SoftApState softApState = new SoftApState(
+                WifiManager.WIFI_AP_STATE_ENABLED, 0, null, null);
+        mSoftApManagerCallback.onStateChanged(softApState);
         mLooper.dispatchAll();
 
-        verify(mSoftApStateMachineCallback, never()).onStateChanged(anyInt(), anyInt());
+        verify(mSoftApStateMachineCallback, never()).onStateChanged(softApState);
         verify(mSoftApStateMachineCallback, never()).onConnectedClientsOrInfoChanged(any(),
                 any(), anyBoolean());
     }
@@ -1048,7 +1086,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         configBuilder.setSsid("ThisIsAConfig");
         SoftApModeConfiguration softApConfig = new SoftApModeConfiguration(
                 WifiManager.IFACE_IP_MODE_TETHERED, configBuilder.build(), mSoftApCapability,
-                TEST_COUNTRYCODE);
+                TEST_COUNTRYCODE, null);
         enterSoftApActiveMode(softApConfig);
     }
 
@@ -1075,12 +1113,12 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         configBuilder1.setSsid("ThisIsAConfig");
         SoftApModeConfiguration softApConfig1 = new SoftApModeConfiguration(
                 WifiManager.IFACE_IP_MODE_TETHERED, configBuilder1.build(),
-                mSoftApCapability, TEST_COUNTRYCODE);
+                mSoftApCapability, TEST_COUNTRYCODE, null);
         Builder configBuilder2 = new SoftApConfiguration.Builder();
         configBuilder2.setSsid("ThisIsASecondConfig");
         SoftApModeConfiguration softApConfig2 = new SoftApModeConfiguration(
                 WifiManager.IFACE_IP_MODE_TETHERED, configBuilder2.build(),
-                mSoftApCapability, TEST_COUNTRYCODE);
+                mSoftApCapability, TEST_COUNTRYCODE, null);
 
         doAnswer(new Answer<SoftApManager>() {
             public SoftApManager answer(InvocationOnMock invocation) {
@@ -1126,6 +1164,8 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         verify(mWifiNative).getSupportedFeatureSet(null);
         verify(mWifiNative).isStaApConcurrencySupported();
         verify(mWifiNative).isStaStaConcurrencySupported();
+        verify(mWifiNative).isP2pStaConcurrencySupported();
+        verify(mWifiNative).isNanStaConcurrencySupported();
         verifyZeroInteractions(mWifiNative);
     }
 
@@ -1140,6 +1180,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         verify(mWifiDiagnostics).triggerBugReportDataCapture(
                 WifiDiagnostics.REPORT_REASON_WIFINATIVE_FAILURE);
         verify(mSelfRecovery).trigger(eq(SelfRecovery.REASON_WIFINATIVE_FAILURE));
+        verify(mWifiConfigManager).writeDataToStorage();
     }
 
     /**
@@ -1153,6 +1194,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         verify(mWifiDiagnostics, never()).triggerBugReportDataCapture(
                 WifiDiagnostics.REPORT_REASON_WIFINATIVE_FAILURE);
         verify(mSelfRecovery, never()).trigger(eq(SelfRecovery.REASON_WIFINATIVE_FAILURE));
+        verify(mWifiConfigManager, never()).writeDataToStorage();
     }
 
     /**
@@ -1165,6 +1207,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         verify(mWifiDiagnostics, never()).triggerBugReportDataCapture(
                 WifiDiagnostics.REPORT_REASON_WIFINATIVE_FAILURE);
         verify(mSelfRecovery, never()).trigger(eq(SelfRecovery.REASON_WIFINATIVE_FAILURE));
+        verify(mWifiConfigManager, never()).writeDataToStorage();
     }
 
     /**
@@ -1206,12 +1249,14 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         mSoftApListener.onStopped(mSoftApManager);
         mLooper.dispatchAll();
-        mSoftApManagerCallback.onStateChanged(WifiManager.WIFI_AP_STATE_DISABLED, 0);
+        SoftApState softApState = new SoftApState(
+                WifiManager.WIFI_AP_STATE_DISABLED, 0, null, null);
+        mSoftApManagerCallback.onStateChanged(softApState);
         mLooper.dispatchAll();
 
         shutdownWifi();
 
-        verify(mSoftApStateMachineCallback).onStateChanged(WifiManager.WIFI_AP_STATE_DISABLED, 0);
+        verify(mSoftApStateMachineCallback).onStateChanged(softApState);
     }
 
     /**
@@ -1224,10 +1269,12 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         shutdownWifi();
 
         mSoftApListener.onStopped(mSoftApManager);
-        mSoftApManagerCallback.onStateChanged(WifiManager.WIFI_AP_STATE_DISABLED, 0);
+        SoftApState softApState = new SoftApState(
+                WifiManager.WIFI_AP_STATE_DISABLED, 0, null, null);
+        mSoftApManagerCallback.onStateChanged(softApState);
         mLooper.dispatchAll();
 
-        verify(mSoftApStateMachineCallback).onStateChanged(WifiManager.WIFI_AP_STATE_DISABLED, 0);
+        verify(mSoftApStateMachineCallback).onStateChanged(softApState);
         verify(mModeChangeCallback).onActiveModeManagerRemoved(mSoftApManager);
     }
 
@@ -1266,12 +1313,12 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mWifiInjector.getWifiApConfigStore()).thenReturn(mWifiApConfigStore);
         SoftApModeConfiguration tetherConfig =
                 new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_TETHERED, null,
-                mSoftApCapability, TEST_COUNTRYCODE);
+                mSoftApCapability, TEST_COUNTRYCODE, null);
         SoftApConfiguration lohsConfigWC = mWifiApConfigStore.generateLocalOnlyHotspotConfig(
                 mContext, null, mSoftApCapability);
         SoftApModeConfiguration lohsConfig =
                 new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_LOCAL_ONLY, lohsConfigWC,
-                mSoftApCapability, TEST_COUNTRYCODE);
+                mSoftApCapability, TEST_COUNTRYCODE, null);
 
         // mock SoftAPManagers
         when(mSoftApManager.getRole()).thenReturn(ROLE_SOFTAP_TETHERED);
@@ -1451,7 +1498,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mWifiPermissionsUtil.isLocationModeEnabled()).thenReturn(false);
 
         reset(mContext);
-        when(mContext.getResources()).thenReturn(mResources);
+        when(mContext.getResourceCache()).thenReturn(mWifiResourceCache);
         mActiveModeWarden = createActiveModeWarden();
         mActiveModeWarden.start();
         mLooper.dispatchAll();
@@ -1485,7 +1532,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mSettingsStore.updateAirplaneModeTracker()).thenReturn(true);
 
         reset(mContext);
-        when(mContext.getResources()).thenReturn(mResources);
+        when(mContext.getResourceCache()).thenReturn(mWifiResourceCache);
         mActiveModeWarden = createActiveModeWarden();
         mActiveModeWarden.start();
         mLooper.dispatchAll();
@@ -1541,6 +1588,55 @@ public class ActiveModeWardenTest extends WifiBaseTest {
                 anyInt(), eq("android_apm"), eq(false));
     }
 
+    /** Wi-Fi state is restored properly when SoftAp is enabled during airplane mode. */
+    @Test
+    public void testWifiStateRestoredWhenSoftApEnabledDuringApm() throws Exception {
+        enableWifi();
+        assertInEnabledState();
+
+        // enabling airplane mode shuts down wifi
+        assertWifiShutDown(
+                () -> {
+                    when(mSettingsStore.isAirplaneModeOn()).thenReturn(true);
+                    mActiveModeWarden.airplaneModeToggled();
+                    mLooper.dispatchAll();
+                });
+        verify(mLastCallerInfoManager)
+                .put(
+                        eq(WifiManager.API_WIFI_ENABLED),
+                        anyInt(),
+                        anyInt(),
+                        anyInt(),
+                        eq("android_apm"),
+                        eq(false));
+        mClientListener.onStopped(mClientModeManager);
+        mLooper.dispatchAll();
+
+        // start SoftAp
+        mActiveModeWarden.startSoftAp(
+                new SoftApModeConfiguration(
+                        WifiManager.IFACE_IP_MODE_LOCAL_ONLY,
+                        null,
+                        mSoftApCapability,
+                        TEST_COUNTRYCODE,
+                        null),
+                TEST_WORKSOURCE);
+        mLooper.dispatchAll();
+
+        // disabling airplane mode enables wifi
+        when(mSettingsStore.isAirplaneModeOn()).thenReturn(false);
+        mActiveModeWarden.airplaneModeToggled();
+        mLooper.dispatchAll();
+        verify(mLastCallerInfoManager)
+                .put(
+                        eq(WifiManager.API_WIFI_ENABLED),
+                        anyInt(),
+                        anyInt(),
+                        anyInt(),
+                        eq("android_apm"),
+                        eq(true));
+    }
+
     /**
      * Disabling location mode when in scan mode will disable wifi
      */
@@ -1551,7 +1647,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mWifiPermissionsUtil.isLocationModeEnabled()).thenReturn(true);
 
         reset(mContext);
-        when(mContext.getResources()).thenReturn(mResources);
+        when(mContext.getResourceCache()).thenReturn(mWifiResourceCache);
         mActiveModeWarden = createActiveModeWarden();
         mActiveModeWarden.start();
         mLooper.dispatchAll();
@@ -2174,7 +2270,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         // try to start Soft AP
         mActiveModeWarden.startSoftAp(
                 new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_TETHERED, null,
-                mSoftApCapability, TEST_COUNTRYCODE), TEST_WORKSOURCE);
+                mSoftApCapability, TEST_COUNTRYCODE, null), TEST_WORKSOURCE);
         mLooper.dispatchAll();
 
         verify(mWifiInjector, never())
@@ -2182,13 +2278,19 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertInDisabledState();
 
         // verify triggered Soft AP failure callback
-        verify(mSoftApStateMachineCallback).onStateChanged(WifiManager.WIFI_AP_STATE_FAILED,
-                WifiManager.SAP_START_FAILURE_GENERAL);
+        ArgumentCaptor<SoftApState> softApStateCaptor =
+                ArgumentCaptor.forClass(SoftApState.class);
+        verify(mSoftApStateMachineCallback).onStateChanged(softApStateCaptor.capture());
+        assertThat(softApStateCaptor.getValue().getState()).isEqualTo(WIFI_AP_STATE_FAILED);
+        assertThat(softApStateCaptor.getValue().getFailureReason())
+                .isEqualTo(SAP_START_FAILURE_GENERAL);
+        assertThat(softApStateCaptor.getValue().getFailureReasonInternal())
+                .isEqualTo(SAP_START_FAILURE_GENERAL);
 
         // try to start LOHS
         mActiveModeWarden.startSoftAp(
                 new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_LOCAL_ONLY, null,
-                mSoftApCapability, TEST_COUNTRYCODE), TEST_WORKSOURCE);
+                mSoftApCapability, TEST_COUNTRYCODE, null), TEST_WORKSOURCE);
         mLooper.dispatchAll();
 
         verify(mWifiInjector, never())
@@ -2196,8 +2298,12 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertInDisabledState();
 
         // verify triggered LOHS failure callback
-        verify(mLohsStateMachineCallback).onStateChanged(WifiManager.WIFI_AP_STATE_FAILED,
-                WifiManager.SAP_START_FAILURE_GENERAL);
+        verify(mLohsStateMachineCallback).onStateChanged(softApStateCaptor.capture());
+        assertThat(softApStateCaptor.getValue().getState()).isEqualTo(WIFI_AP_STATE_FAILED);
+        assertThat(softApStateCaptor.getValue().getFailureReason())
+                .isEqualTo(SAP_START_FAILURE_GENERAL);
+        assertThat(softApStateCaptor.getValue().getFailureReasonInternal())
+                .isEqualTo(SAP_START_FAILURE_GENERAL);
     }
 
     /**
@@ -2233,7 +2339,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         // Turn on SoftAp.
         mActiveModeWarden.startSoftAp(
                 new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_TETHERED, null,
-                mSoftApCapability, TEST_COUNTRYCODE), TEST_WORKSOURCE);
+                mSoftApCapability, TEST_COUNTRYCODE, null), TEST_WORKSOURCE);
         mLooper.dispatchAll();
         verify(mWifiInjector)
                 .makeSoftApManager(any(), any(), any(), eq(TEST_WORKSOURCE), any(), anyBoolean());
@@ -2311,7 +2417,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         mActiveModeWarden.startSoftAp(
                 new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_TETHERED, null,
-                mSoftApCapability, TEST_COUNTRYCODE), TEST_WORKSOURCE);
+                mSoftApCapability, TEST_COUNTRYCODE, null), TEST_WORKSOURCE);
         // add an "unexpected" sta mode stop to simulate a single interface device
         mClientListener.onStopped(mClientModeManager);
         mLooper.dispatchAll();
@@ -2347,7 +2453,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         mActiveModeWarden.startSoftAp(
                 new SoftApModeConfiguration(WifiManager.IFACE_IP_MODE_TETHERED, null,
-                mSoftApCapability, TEST_COUNTRYCODE), TEST_WORKSOURCE);
+                mSoftApCapability, TEST_COUNTRYCODE, null), TEST_WORKSOURCE);
         mLooper.dispatchAll();
 
         when(mSettingsStore.isWifiToggleEnabled()).thenReturn(true);
@@ -2593,7 +2699,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertInDisabledState();
 
         verify(mClientModeManager, atLeastOnce()).getInterfaceName();
-        verifyNoMoreInteractions(mClientModeManager, mSoftApManager);
+        verify(mClientModeManager, atLeastOnce()).getPreviousRole();
     }
 
     /**
@@ -2921,16 +3027,16 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertFalse(mActiveModeWarden.isStaStaConcurrencySupportedForMbb());
         assertFalse(mActiveModeWarden.isStaStaConcurrencySupportedForRestrictedConnections());
 
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.isStaStaConcurrencySupportedForLocalOnlyConnections());
 
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.isStaStaConcurrencySupportedForMbb());
 
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.isStaStaConcurrencySupportedForRestrictedConnections());
     }
@@ -2942,6 +3048,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             String ssid, String bssid)
             throws Exception {
         enterClientModeActiveState();
+        when(additionalClientModeManager.getRequestorWs()).thenReturn(TEST_WORKSOURCE);
 
         Mutable<Listener<ConcreteClientModeManager>> additionalClientListener =
                 new Mutable<>();
@@ -3003,7 +3110,10 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertEquals(additionalClientModeManager, requestedClientModeManager.getValue());
         // the additional CMM never became primary
         verify(mPrimaryChangedCallback, never()).onChange(any(), eq(additionalClientModeManager));
-
+        if (additionaClientModeManagerRole == ROLE_CLIENT_LOCAL_ONLY
+                || additionaClientModeManagerRole == ROLE_CLIENT_SECONDARY_LONG_LIVED) {
+            assertEquals(Set.of(TEST_WORKSOURCE), mActiveModeWarden.getSecondaryRequestWs());
+        }
         return additionalClientListener.value;
     }
 
@@ -3011,7 +3121,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void testRemoveDefaultClientModeManager() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_LOCAL_ONLY, false));
@@ -3048,8 +3158,9 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     }
 
     private void requestRemoveAdditionalClientModeManagerWhenNotAllowed(
-            ClientConnectivityRole role, boolean clientIsExpected) throws Exception {
-        enterClientModeActiveState();
+            ClientConnectivityRole role, boolean clientIsExpected,
+            long featureSet) throws Exception {
+        enterClientModeActiveState(false, featureSet);
 
         // Connected to ssid1/bssid1
         WifiConfiguration config1 = new WifiConfiguration();
@@ -3250,7 +3361,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void requestRemoveLocalOnlyClientModeManager() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_LOCAL_ONLY, false));
@@ -3264,18 +3375,41 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(false);
         assertFalse(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_LOCAL_ONLY, false));
-        requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_LOCAL_ONLY, true);
+        requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_LOCAL_ONLY, true,
+                TEST_FEATURE_SET);
     }
 
     @Test
     public void requestRemoveLocalOnlyClientModeManagerWhenFeatureDisabled() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(false);
         assertFalse(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_LOCAL_ONLY, false));
-        requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_LOCAL_ONLY, true);
+        requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_LOCAL_ONLY, true,
+                TEST_FEATURE_SET);
+    }
+
+    @Test
+    public void testRequestSecondaryClientModeManagerWhenWifiIsDisabling()
+            throws Exception {
+        // Ensure that we can create more client ifaces.
+        when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+                .thenReturn(true);
+        assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
+                TEST_WORKSOURCE, ROLE_CLIENT_LOCAL_ONLY, false));
+
+        // Set wifi to disabling and verify secondary CMM is not obtained
+        mActiveModeWarden.setWifiStateForApiCalls(WIFI_STATE_DISABLING);
+        ExternalClientModeManagerRequestListener externalRequestListener = mock(
+                ExternalClientModeManagerRequestListener.class);
+        mActiveModeWarden.requestLocalOnlyClientModeManager(
+                externalRequestListener, TEST_WORKSOURCE, TEST_SSID_1, TEST_BSSID_1, false);
+        mLooper.dispatchAll();
+
+        verify(externalRequestListener).onAnswer(null);
     }
 
     @Test
@@ -3292,7 +3426,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void requestLocalOnlyClientModeManagerWhenAlreadyPresent() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_LOCAL_ONLY, false));
@@ -3304,7 +3438,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void requestLocalOnlyClientModeManagerWhenAlreadyPresentSameBssid() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_LOCAL_ONLY, false));
@@ -3316,7 +3450,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void requestLocalOnlyClientModeManagerWhenConnectingToPrimaryBssid() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_LOCAL_ONLY, false));
@@ -3329,7 +3463,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
 
         when(mWifiPermissionsUtil.isSystem(TEST_PACKAGE, TEST_UID)).thenReturn(false);
@@ -3345,7 +3479,8 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         WorkSource workSource = new WorkSource(TEST_WORKSOURCE);
         workSource.add(SETTINGS_WORKSOURCE);
         verify(mWifiNative).isItPossibleToCreateStaIface(eq(workSource));
-        requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_LOCAL_ONLY, true);
+        requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_LOCAL_ONLY,
+                true,  TEST_FEATURE_SET);
     }
 
     @Test
@@ -3353,7 +3488,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
         when(mWifiPermissionsUtil.isSystem(TEST_PACKAGE, TEST_UID)).thenReturn(false);
         when(mWifiPermissionsUtil.isTargetSdkLessThan(
@@ -3369,8 +3504,9 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can't create more client ifaces - so will attempt to fallback (which we
         // should be able to do for <S apps)
+        when(mWifiNative.isStaStaConcurrencySupported()).thenReturn(true);
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(false);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
         when(mWifiPermissionsUtil.isSystem(TEST_PACKAGE, TEST_UID)).thenReturn(false);
         when(mWifiPermissionsUtil.isTargetSdkLessThan(
@@ -3378,16 +3514,14 @@ public class ActiveModeWardenTest extends WifiBaseTest {
                 .thenReturn(true);
         assertFalse(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_LOCAL_ONLY, false));
-        requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_LOCAL_ONLY, true);
+        requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_LOCAL_ONLY,
+                true,  TEST_FEATURE_SET | WifiManager.WIFI_FEATURE_ADDITIONAL_STA_LOCAL_ONLY);
     }
 
-    @Test
-    public void requestRemoveLoClientModeManagerWhenNotSystemAppAndTargetSdkEqualToSAndCantCreate()
-            throws Exception {
-        // Ensure that we can't create more client ifaces - so will attempt to fallback (which we
-        // can't for >=S apps)
+    private void testLoFallbackAboveAndroidS(boolean isStaStaSupported) throws Exception {
+        when(mWifiNative.isStaStaConcurrencySupported()).thenReturn(isStaStaSupported);
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(false);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
         when(mWifiPermissionsUtil.isSystem(TEST_PACKAGE, TEST_UID)).thenReturn(false);
         when(mWifiPermissionsUtil.isTargetSdkLessThan(
@@ -3395,14 +3529,37 @@ public class ActiveModeWardenTest extends WifiBaseTest {
                 .thenReturn(false);
         assertFalse(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_LOCAL_ONLY, false));
-        requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_LOCAL_ONLY, false);
+        long expectedFeatureSet = TEST_FEATURE_SET;
+        if (isStaStaSupported) {
+            expectedFeatureSet |= WifiManager.WIFI_FEATURE_ADDITIONAL_STA_LOCAL_ONLY;
+        }
+
+        requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_LOCAL_ONLY,
+                !isStaStaSupported,
+                expectedFeatureSet);
+    }
+
+    @Test
+    public void requestRemoveLoClientModeManagerWhenNotSystemAppAndTargetSdkEqualToSAndCantCreate()
+            throws Exception {
+        // Ensure that we can't create more client ifaces - so will attempt to fallback (which we
+        // can't for >=S apps)
+        testLoFallbackAboveAndroidS(true);
+    }
+
+    @Test
+    public void requestRemoveLoClientModeManagerWhenNotSystemAppAndTargetSdkEqualToSAndCantCreate2()
+            throws Exception {
+        // Ensure that we can't create more client ifaces and STA+STA is not supported, we
+        // fallback even for >=S apps
+        testLoFallbackAboveAndroidS(false);
     }
 
     @Test
     public void requestRemoveSecondaryLongLivedClientModeManager() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_SECONDARY_LONG_LIVED, false));
@@ -3418,7 +3575,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertFalse(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_SECONDARY_LONG_LIVED, false));
         requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_SECONDARY_LONG_LIVED,
-                true);
+                true,  TEST_FEATURE_SET);
     }
 
     @Test
@@ -3426,19 +3583,19 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
                 .thenReturn(false);
         assertFalse(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_SECONDARY_LONG_LIVED, false));
         requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_SECONDARY_LONG_LIVED,
-                true);
+                true,  TEST_FEATURE_SET);
     }
 
     @Test
     public void requestSecondaryLongLivedClientModeManagerWhenWifiIsOff() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_SECONDARY_LONG_LIVED, false));
@@ -3450,7 +3607,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void requestSecondaryLongLivedClientModeManagerWhenAlreadyPresent() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_SECONDARY_LONG_LIVED, false));
@@ -3463,7 +3620,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_SECONDARY_LONG_LIVED, false));
@@ -3477,7 +3634,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_SECONDARY_LONG_LIVED, false));
@@ -3490,7 +3647,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void requestRemoveSecondaryTransientClientModeManager() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
@@ -3507,7 +3664,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertFalse(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_SECONDARY_TRANSIENT, false));
         requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_SECONDARY_TRANSIENT,
-                true);
+                true,  TEST_FEATURE_SET);
     }
 
     @Test
@@ -3515,20 +3672,20 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(false);
         assertFalse(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_SECONDARY_TRANSIENT, false));
         requestRemoveAdditionalClientModeManagerWhenNotAllowed(ROLE_CLIENT_SECONDARY_TRANSIENT,
-                true);
+                true,  TEST_FEATURE_SET);
     }
 
     @Test
     public void requestSecondaryTransientClientModeManagerWhenWifiIsOff() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
@@ -3541,7 +3698,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void requestSecondaryTransientClientModeManagerWhenAlreadyPresent() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
@@ -3555,7 +3712,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
@@ -3570,7 +3727,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
@@ -3585,10 +3742,10 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
@@ -3670,10 +3827,10 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
@@ -3751,7 +3908,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
@@ -3815,9 +3972,9 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mWifiPermissionsUtil.checkEnterCarModePrioritized(anyInt())).thenReturn(true);
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_LOCAL_ONLY, false));
@@ -3875,9 +4032,9 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         when(mWifiPermissionsUtil.checkEnterCarModePrioritized(anyInt())).thenReturn(true);
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
                 TEST_WORKSOURCE, ROLE_CLIENT_LOCAL_ONLY, false));
@@ -3923,7 +4080,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
@@ -3973,6 +4130,23 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mClientListener.onStopped(mClientModeManager);
         mLooper.dispatchAll();
         assertInDisabledState();
+    }
+
+    @Test
+    public void testGetActiveModeManagersOrder() throws Exception {
+        enableWifi();
+        enterSoftApActiveMode();
+        assertInEnabledState();
+
+        Collection<ActiveModeManager> activeModeManagers =
+                mActiveModeWarden.getActiveModeManagers();
+        if (activeModeManagers == null) {
+            fail("activeModeManagers list should not be null");
+        }
+        Object[] modeManagers = activeModeManagers.toArray();
+        assertEquals(2, modeManagers.length);
+        assertTrue(modeManagers[0] instanceof SoftApManager);
+        assertTrue(modeManagers[1] instanceof ConcreteClientModeManager);
     }
 
     @Test
@@ -4115,17 +4289,18 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void propagateConnectedWifiScorerToPrimaryClientModeManager() throws Exception {
         IBinder iBinder = mock(IBinder.class);
         IWifiConnectedNetworkScorer iScorer = mock(IWifiConnectedNetworkScorer.class);
-        mActiveModeWarden.setWifiConnectedNetworkScorer(iBinder, iScorer);
+        mActiveModeWarden.setWifiConnectedNetworkScorer(iBinder, iScorer, TEST_UID);
         verify(iScorer).onSetScoreUpdateObserver(mExternalScoreUpdateObserverProxy);
         enterClientModeActiveState();
         assertInEnabledState();
-        verify(mClientModeManager).setWifiConnectedNetworkScorer(iBinder, iScorer);
+        verify(mClientModeManager).setWifiConnectedNetworkScorer(iBinder, iScorer, TEST_UID);
 
         mActiveModeWarden.clearWifiConnectedNetworkScorer();
         verify(mClientModeManager).clearWifiConnectedNetworkScorer();
 
-        mActiveModeWarden.setWifiConnectedNetworkScorer(iBinder, iScorer);
-        verify(mClientModeManager, times(2)).setWifiConnectedNetworkScorer(iBinder, iScorer);
+        mActiveModeWarden.setWifiConnectedNetworkScorer(iBinder, iScorer, TEST_UID);
+        verify(mClientModeManager, times(2)).setWifiConnectedNetworkScorer(iBinder, iScorer,
+                TEST_UID);
     }
 
     @Test
@@ -4133,11 +4308,11 @@ public class ActiveModeWardenTest extends WifiBaseTest {
             throws Exception {
         IBinder iBinder = mock(IBinder.class);
         IWifiConnectedNetworkScorer iScorer = mock(IWifiConnectedNetworkScorer.class);
-        mActiveModeWarden.setWifiConnectedNetworkScorer(iBinder, iScorer);
+        mActiveModeWarden.setWifiConnectedNetworkScorer(iBinder, iScorer, TEST_UID);
         verify(iScorer).onSetScoreUpdateObserver(mExternalScoreUpdateObserverProxy);
         enterClientModeActiveState();
         assertInEnabledState();
-        verify(mClientModeManager).setWifiConnectedNetworkScorer(iBinder, iScorer);
+        verify(mClientModeManager).setWifiConnectedNetworkScorer(iBinder, iScorer, TEST_UID);
 
         enterScanOnlyModeActiveState(true);
 
@@ -4149,12 +4324,13 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         IBinder iBinder = mock(IBinder.class);
         IWifiConnectedNetworkScorer iScorer = mock(IWifiConnectedNetworkScorer.class);
         doThrow(new RemoteException()).when(iScorer).onSetScoreUpdateObserver(any());
-        mActiveModeWarden.setWifiConnectedNetworkScorer(iBinder, iScorer);
+        mActiveModeWarden.setWifiConnectedNetworkScorer(iBinder, iScorer, TEST_UID);
         verify(iScorer).onSetScoreUpdateObserver(mExternalScoreUpdateObserverProxy);
         enterClientModeActiveState();
         assertInEnabledState();
         // Ensure we did not propagate the scorer.
-        verify(mClientModeManager, never()).setWifiConnectedNetworkScorer(iBinder, iScorer);
+        verify(mClientModeManager, never()).setWifiConnectedNetworkScorer(iBinder, iScorer,
+                TEST_UID);
     }
 
     /** Verify that the primary changed callback is triggered when entering client mode. */
@@ -4181,7 +4357,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void testSwitchPrimaryClientModeManager() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         assertTrue(mActiveModeWarden.canRequestMoreClientModeManagersInRole(
@@ -4259,7 +4435,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
 
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
 
         ConcreteClientModeManager additionalClientModeManager =
@@ -4563,9 +4739,9 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void testRequestForSecondaryLocalOnlyForPreSAppWithUserConnect() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
                 .thenReturn(true);
         when(mWifiPermissionsUtil.isSystem(TEST_PACKAGE, TEST_UID)).thenReturn(false);
         when(mWifiPermissionsUtil.isTargetSdkLessThan(
@@ -4628,7 +4804,7 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     public void testRequestForSecondaryLocalOnlyForAppWithUserConnect() throws Exception {
         // Ensure that we can create more client ifaces.
         when(mWifiNative.isItPossibleToCreateStaIface(any())).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
         when(mWifiPermissionsUtil.isSystem(TEST_PACKAGE, TEST_UID)).thenReturn(false);
         when(mWifiPermissionsUtil.isTargetSdkLessThan(
@@ -4720,14 +4896,14 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertEquals(supportedFeaturesFromWifiNative, mActiveModeWarden.getSupportedFeatureSet());
 
         when(mWifiNative.isStaStaConcurrencySupported()).thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaLocalOnlyConcurrencyEnabled))
                 .thenReturn(true);
         mClientListener.onStarted(mClientModeManager);
         assertEquals(supportedFeaturesFromWifiNative
                         | WifiManager.WIFI_FEATURE_ADDITIONAL_STA_LOCAL_ONLY,
                 mActiveModeWarden.getSupportedFeatureSet());
 
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifiMultiStaNetworkSwitchingMakeBeforeBreakEnabled))
                 .thenReturn(true);
         mClientListener.onStarted(mClientModeManager);
@@ -4736,10 +4912,10 @@ public class ActiveModeWardenTest extends WifiBaseTest {
                         | WifiManager.WIFI_FEATURE_ADDITIONAL_STA_MBB,
                 mActiveModeWarden.getSupportedFeatureSet());
 
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
+        when(mWifiResourceCache.getBoolean(R.bool.config_wifiMultiStaRestrictedConcurrencyEnabled))
                 .thenReturn(true);
-        when(mResources.getBoolean(R.bool.config_wifiMultiStaMultiInternetConcurrencyEnabled))
-                .thenReturn(true);
+        when(mWifiResourceCache.getBoolean(
+                R.bool.config_wifiMultiStaMultiInternetConcurrencyEnabled)).thenReturn(true);
         mClientListener.onStarted(mClientModeManager);
         assertEquals(supportedFeaturesFromWifiNative
                         | WifiManager.WIFI_FEATURE_ADDITIONAL_STA_LOCAL_ONLY
@@ -4752,13 +4928,13 @@ public class ActiveModeWardenTest extends WifiBaseTest {
     private long testGetSupportedFeaturesCaseForMacRandomization(
             long supportedFeaturesFromWifiNative, boolean apMacRandomizationEnabled,
             boolean staConnectedMacRandomizationEnabled, boolean p2pMacRandomizationEnabled) {
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifi_connected_mac_randomization_supported))
                 .thenReturn(staConnectedMacRandomizationEnabled);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifi_ap_mac_randomization_supported))
                 .thenReturn(apMacRandomizationEnabled);
-        when(mResources.getBoolean(
+        when(mWifiResourceCache.getBoolean(
                 R.bool.config_wifi_p2p_mac_randomization_supported))
                 .thenReturn(p2pMacRandomizationEnabled);
         when(mWifiNative.getSupportedFeatureSet(anyString()))
@@ -4897,10 +5073,29 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mClientListener.onStopped(mClientModeManager);
         mLooper.dispatchAll();
         assertInDisabledState();
+        verify(mLastCallerInfoManager).put(eq(WifiManager.API_WIFI_ENABLED), anyInt(),
+                anyInt(), anyInt(), any(), eq(false));
     }
 
     @Test
-    public void testSatelliteModeOffEnableWifi() throws Exception {
+    public void testSatelliteModeOffNoOp() throws Exception {
+        // Wifi is enabled
+        enterClientModeActiveState();
+        assertInEnabledState();
+
+        // Satellite mode is off
+        when(mSettingsStore.isSatelliteModeOn()).thenReturn(false);
+        mActiveModeWarden.handleSatelliteModeChange();
+
+        mLooper.dispatchAll();
+        assertInEnabledState();
+        // Should not enable wifi again since wifi is already on
+        verify(mLastCallerInfoManager, never()).put(eq(WifiManager.API_WIFI_ENABLED), anyInt(),
+                anyInt(), anyInt(), any(), eq(true));
+    }
+
+    @Test
+    public void testSatelliteModeOnAndThenOffEnableWifi() throws Exception {
         // Wifi is enabled
         enterClientModeActiveState();
         assertInEnabledState();
@@ -4914,12 +5109,16 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         mClientListener.onStopped(mClientModeManager);
         mLooper.dispatchAll();
         assertInDisabledState();
+        verify(mLastCallerInfoManager).put(eq(WifiManager.API_WIFI_ENABLED), anyInt(),
+                anyInt(), anyInt(), any(), eq(false));
 
         // Satellite mode is off, enable Wifi
         when(mSettingsStore.isSatelliteModeOn()).thenReturn(false);
         mActiveModeWarden.handleSatelliteModeChange();
         mLooper.dispatchAll();
         assertInEnabledState();
+        verify(mLastCallerInfoManager).put(eq(WifiManager.API_WIFI_ENABLED), anyInt(),
+                anyInt(), anyInt(), any(), eq(true));
     }
 
 
@@ -5124,4 +5323,86 @@ public class ActiveModeWardenTest extends WifiBaseTest {
         assertInEnabledState();
     }
 
+    @Test
+    public void testSatelliteModemDisableWifiWhenLocationModeChanged() throws Exception {
+        when(mSettingsStore.isScanAlwaysAvailable()).thenReturn(true);
+        when(mWifiPermissionsUtil.isLocationModeEnabled()).thenReturn(false);
+
+        // Wifi is enabled
+        enterClientModeActiveState();
+        assertInEnabledState();
+
+        // Satellite mode is ON, disable Wifi
+        assertWifiShutDown(() -> {
+            when(mSettingsStore.isSatelliteModeOn()).thenReturn(true);
+            mActiveModeWarden.handleSatelliteModeChange();
+            mLooper.dispatchAll();
+        });
+        mClientListener.onStopped(mClientModeManager);
+        mLooper.dispatchAll();
+        assertInDisabledState();
+
+        // Location state changes
+        ArgumentCaptor<BroadcastReceiver> bcastRxCaptor =
+                ArgumentCaptor.forClass(BroadcastReceiver.class);
+        verify(mContext).registerReceiver(
+                bcastRxCaptor.capture(),
+                argThat(filter -> filter.hasAction(LocationManager.MODE_CHANGED_ACTION)));
+        BroadcastReceiver broadcastReceiver = bcastRxCaptor.getValue();
+
+        when(mWifiPermissionsUtil.isLocationModeEnabled()).thenReturn(true);
+        Intent intent = new Intent(LocationManager.MODE_CHANGED_ACTION);
+        broadcastReceiver.onReceive(mContext, intent);
+        mLooper.dispatchAll();
+
+        // Ensure Wi-Fi is still disabled
+        assertInDisabledState();
+    }
+
+    @Test
+    public void testOnIdleModeChanged() throws Exception {
+        enterClientModeActiveState();
+        List<ClientModeManager> currentCMMs = mActiveModeWarden.getClientModeManagers();
+        assertTrue(currentCMMs.size() >= 1);
+        mActiveModeWarden.onIdleModeChanged(true);
+        for (ClientModeManager cmm : currentCMMs) {
+            verify(cmm).onIdleModeChanged(true);
+        }
+    }
+
+    @Test
+    public void testWepNotDeprecated() throws Exception {
+        when(mWifiGlobals.isWepSupported()).thenReturn(true);
+        enterClientModeActiveState(false, TEST_FEATURE_SET | WifiManager.WIFI_FEATURE_WEP);
+    }
+
+    @Test
+    public void testWpaPersonalNotDeprecated() throws Exception {
+        when(mWifiGlobals.isWpaPersonalDeprecated()).thenReturn(false);
+        enterClientModeActiveState(false, TEST_FEATURE_SET | WifiManager.WIFI_FEATURE_WPA_PERSONAL);
+    }
+
+    @Test
+    public void testD2dSupportedWhenInfraStaDisabledWhenP2pStaConcurrencySupported()
+            throws Exception {
+        when(mWifiNative.isP2pStaConcurrencySupported()).thenReturn(true);
+        when(mWifiGlobals.isD2dSupportedWhenInfraStaDisabled()).thenReturn(true);
+        mActiveModeWarden = createActiveModeWarden();
+        mActiveModeWarden.start();
+        mLooper.dispatchAll();
+        verify(mWifiGlobals).setD2dStaConcurrencySupported(true);
+        verify(mWifiGlobals, atLeastOnce()).isD2dSupportedWhenInfraStaDisabled();
+    }
+
+    @Test
+    public void testD2dSupportedWhenInfraStaDisabledWhenNanStaConcurrencySupported()
+            throws Exception {
+        when(mWifiNative.isNanStaConcurrencySupported()).thenReturn(true);
+        when(mWifiGlobals.isD2dSupportedWhenInfraStaDisabled()).thenReturn(true);
+        mActiveModeWarden = createActiveModeWarden();
+        mActiveModeWarden.start();
+        mLooper.dispatchAll();
+        verify(mWifiGlobals).setD2dStaConcurrencySupported(true);
+        verify(mWifiGlobals, atLeastOnce()).isD2dSupportedWhenInfraStaDisabled();
+    }
 }

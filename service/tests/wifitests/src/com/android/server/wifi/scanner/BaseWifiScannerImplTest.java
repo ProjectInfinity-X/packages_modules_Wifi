@@ -40,6 +40,7 @@ import com.android.server.wifi.MockWifiMonitor;
 import com.android.server.wifi.ScanDetail;
 import com.android.server.wifi.ScanResults;
 import com.android.server.wifi.WifiBaseTest;
+import com.android.server.wifi.WifiGlobals;
 import com.android.server.wifi.WifiMonitor;
 import com.android.server.wifi.WifiNative;
 import com.android.server.wifi.scanner.ChannelHelper.ChannelCollection;
@@ -70,6 +71,7 @@ public abstract class BaseWifiScannerImplTest extends WifiBaseTest {
     @Mock WifiNative mWifiNative;
     MockResources mResources;
     @Mock Clock mClock;
+    @Mock WifiGlobals mWifiGlobals;
 
     /**
      * mScanner implementation should be filled in by derived test class
@@ -482,9 +484,8 @@ public abstract class BaseWifiScannerImplTest extends WifiBaseTest {
 
         mLooper.dispatchAll();
 
-        for (ScanResult result : fullResults) {
-            order.verify(eventHandler).onFullScanResult(eq(result), eq(0));
-        }
+        order.verify(eventHandler).onFullScanResults(any(), eq(0));
+
 
         order.verify(eventHandler).onScanStatus(WifiNative.WIFI_SCAN_RESULTS_AVAILABLE);
         assertScanDataEquals(scanData, mScanner.getLatestSingleScanResults());
@@ -549,9 +550,7 @@ public abstract class BaseWifiScannerImplTest extends WifiBaseTest {
         mLooper.dispatchAll();
 
         if (expectFullResults) {
-            for (ScanResult result : results.getRawScanResults()) {
-                order.verify(eventHandler).onFullScanResult(eq(result), eq(0));
-            }
+            order.verify(eventHandler).onFullScanResults(any(), eq(0));
         }
 
         order.verify(eventHandler).onScanStatus(WifiNative.WIFI_SCAN_RESULTS_AVAILABLE);

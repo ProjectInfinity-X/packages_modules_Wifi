@@ -252,7 +252,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         initMocks(this);
         when(mWifiInjector.getDeviceConfigFacade()).thenReturn(mDeviceConfigFacade);
         when(mObjectFactory.makeAnqpCache(mClock)).thenReturn(mAnqpCache);
-        when(mObjectFactory.makeANQPRequestManager(any(), eq(mClock)))
+        when(mObjectFactory.makeANQPRequestManager(any(), eq(mClock), any(), any()))
                 .thenReturn(mAnqpRequestManager);
         when(mObjectFactory.makeOsuNetworkConnection(any(Context.class)))
                 .thenReturn(mOsuNetworkConnection);
@@ -279,7 +279,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         when(mWifiSettingsStore.isWifiPasspointEnabled())
                 .thenReturn(mConfigSettingsPasspointEnabled);
         mLooper = new TestLooper();
-        mHandler = new RunnerHandler(mLooper.getLooper(), 100, new LocalLog(128), mWifiMetrics);
+        mHandler = new RunnerHandler(mLooper.getLooper(), 100, new LocalLog(128));
         mWifiCarrierInfoManager = new WifiCarrierInfoManager(mTelephonyManager,
                 mSubscriptionManager, mWifiInjector, mock(FrameworkFacade.class),
                 mock(WifiContext.class), mWifiConfigStore, mHandler, mWifiMetrics, mClock,
@@ -680,7 +680,7 @@ public class PasspointManagerTest extends WifiBaseTest {
          * 1 from |removeProvider| + 2 from |setAutojoinEnabled| + 2 from
          * |enableMacRandomization| + 2 from |setMeteredOverride| = 7 calls to |saveToStore|
          */
-        verify(mWifiConfigManager, times(7)).saveToStore(true);
+        verify(mWifiConfigManager, times(7)).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderUninstallation();
         verify(mWifiMetrics).incrementNumPasspointProviderUninstallSuccess();
         verify(mAppOpsManager).stopWatchingMode(any(AppOpsManager.OnOpChangedListener.class));
@@ -802,7 +802,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         assertTrue(mManager.addOrUpdateProvider(config, TEST_CREATOR_UID, TEST_PACKAGE,
                 false, true, false));
         verifyInstalledConfig(config);
-        verify(mWifiConfigManager).saveToStore(true);
+        verify(mWifiConfigManager).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallation();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallSuccess();
         reset(mWifiMetrics);
@@ -820,7 +820,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         verify(provider).uninstallCertsAndKeys();
         verify(mWifiConfigManager).removePasspointConfiguredNetwork(
                 provider.getWifiConfig().getProfileKey());
-        verify(mWifiConfigManager).saveToStore(true);
+        verify(mWifiConfigManager).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderUninstallation();
         verify(mWifiMetrics).incrementNumPasspointProviderUninstallSuccess();
         assertTrue(mManager.getProviderConfigs(TEST_UID, true).isEmpty());
@@ -850,9 +850,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         when(mTelephonyManager.createForSubscriptionId(eq(TEST_SUBID))).thenReturn(specifiedTm);
         when(specifiedTm.getSubscriberId()).thenReturn(FULL_IMSI);
         when(specifiedTm.getSimApplicationState()).thenReturn(TelephonyManager.SIM_STATE_LOADED);
-        List<SubscriptionInfo> subInfoList = new ArrayList<SubscriptionInfo>() {{
-                add(subInfo);
-            }};
+        List<SubscriptionInfo> subInfoList = List.of(subInfo);
         when(mSubscriptionManager.getCompleteActiveSubscriptionInfoList()).thenReturn(subInfoList);
         mSubscriptionsCaptor.getValue().onSubscriptionsChanged();
         when(mWifiKeyStore.putCaCertInKeyStore(any(String.class), any(Certificate.class)))
@@ -889,7 +887,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         assertTrue(mManager.addOrUpdateProvider(origConfig, TEST_CREATOR_UID, TEST_PACKAGE,
                 false, true, false));
         verifyInstalledConfig(origConfig);
-        verify(mWifiConfigManager).saveToStore(true);
+        verify(mWifiConfigManager).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallation();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallSuccess();
         verify(origProvider, never()).setUserConnectChoice(any(), anyInt());
@@ -923,7 +921,7 @@ public class PasspointManagerTest extends WifiBaseTest {
                 argThat((c) -> c.FQDN.equals(TEST_FQDN)), eq(TEST_CREATOR_UID), eq(TEST_PACKAGE),
                 eq(false));
         verify(mWifiConfigManager).allowAutojoin(TEST_NETWORK_ID, origWifiConfig.allowAutojoin);
-        verify(mWifiConfigManager).saveToStore(true);
+        verify(mWifiConfigManager).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallation();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallSuccess();
         assertEquals(2, mSharedDataSource.getProviderIndex());
@@ -952,7 +950,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         assertTrue(installedConfigs.contains(origConfig));
         assertTrue(installedConfigs.contains(newConfig));
 
-        verify(mWifiConfigManager).saveToStore(true);
+        verify(mWifiConfigManager).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallation();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallSuccess();
 
@@ -1209,7 +1207,7 @@ public class PasspointManagerTest extends WifiBaseTest {
             List<Pair<PasspointProvider, PasspointMatch>> matchedProviders =
                     mManager.getAllMatchedProviders(createTestScanResult());
 
-            verify(mWifiConfigManager).saveToStore(eq(true));
+            verify(mWifiConfigManager).saveToStore();
 
         } finally {
             session.finishMocking();
@@ -1304,11 +1302,13 @@ public class PasspointManagerTest extends WifiBaseTest {
         WifiConfiguration config4 = provider4.getWifiConfig();
         when(mWifiConfigManager.getConfiguredNetwork(provider4.getConfig().getUniqueId()))
                 .thenReturn(config4);
-
+        verify(mPasspointNetworkNominateHelper, times(4)).refreshWifiConfigsForProviders();
+        reset(mPasspointNetworkNominateHelper);
         List<WifiConfiguration> wifiConfigurationList = mManager.getWifiConfigsForPasspointProfiles(
                 List.of(provider1.getConfig().getUniqueId(), provider2.getConfig().getUniqueId(),
                         provider3.getConfig().getUniqueId(), provider4.getConfig().getUniqueId(),
                         TEST_FQDN + "_353ab8c93", TEST_FQDN + "_83765319aca"));
+        verify(mPasspointNetworkNominateHelper).refreshWifiConfigsForProviders();
         assertEquals(2, wifiConfigurationList.size());
         Set<String> uniqueIdSet = wifiConfigurationList
                 .stream()
@@ -1363,8 +1363,8 @@ public class PasspointManagerTest extends WifiBaseTest {
     }
 
     /**
-     * Verify that {@link PasspointManager#getWifiConfigsForPasspointProfilesWithSsids()}
-     * only returns configs for providers that have been assigned a recent SSID.
+     * Verify that {@link PasspointManager#getWifiConfigsForPasspointProfiles(boolean)} returns
+     * configs for the expected providers.
      */
     @Test
     public void testGetWifiConfigsForPasspointProfilesWithSsids() {
@@ -1374,8 +1374,12 @@ public class PasspointManagerTest extends WifiBaseTest {
                 TEST_PACKAGE, false, null, false);
         when(provider2.getMostRecentSsid()).thenReturn(TEST_SSID); // assign a recent SSID
 
-        // Only entry should be for the provider that was assigned a recent SSID.
-        List<WifiConfiguration> configs = mManager.getWifiConfigsForPasspointProfilesWithSsids();
+        // If SSIDs are not required, both providers should appear in the results list.
+        List<WifiConfiguration> configs = mManager.getWifiConfigsForPasspointProfiles(false);
+        assertEquals(2, configs.size());
+
+        // If SSIDs are required, only the provider with an SSID should appear in the results.
+        configs = mManager.getWifiConfigsForPasspointProfiles(true);
         assertEquals(1, configs.size());
         assertEquals(provider2.getConfig().getUniqueId(), configs.get(0).getPasspointUniqueId());
         assertEquals(TEST_SSID, configs.get(0).SSID);
@@ -2025,7 +2029,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         assertTrue(mManager.addOrUpdateProvider(config, TEST_CREATOR_UID, TEST_PACKAGE,
                 false, true, false));
         verifyInstalledConfig(config);
-        verify(mWifiConfigManager).saveToStore(true);
+        verify(mWifiConfigManager).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallation();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallSuccess();
         reset(mWifiMetrics);
@@ -2039,7 +2043,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         // Remove the provider as a non-privileged non-creator app.
         assertFalse(mManager.removeProvider(TEST_UID, false, null, TEST_FQDN));
         verify(provider, never()).uninstallCertsAndKeys();
-        verify(mWifiConfigManager, never()).saveToStore(true);
+        verify(mWifiConfigManager, never()).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderUninstallation();
         verify(mWifiMetrics, never()).incrementNumPasspointProviderUninstallSuccess();
 
@@ -2111,7 +2115,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         verify(provider, never()).uninstallCertsAndKeys();
         verify(mWifiConfigManager, never()).removePasspointConfiguredNetwork(
                 provider.getWifiConfig().getProfileKey());
-        verify(mWifiConfigManager, never()).saveToStore(true);
+        verify(mWifiConfigManager, never()).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderUninstallation();
         verify(mWifiMetrics, never()).incrementNumPasspointProviderUninstallSuccess();
         verify(mAppOpsManager, never()).stopWatchingMode(
@@ -2130,7 +2134,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         verify(provider).uninstallCertsAndKeys();
         verify(mWifiConfigManager, never()).removePasspointConfiguredNetwork(
                 provider.getWifiConfig().getProfileKey());
-        verify(mWifiConfigManager, never()).saveToStore(true);
+        verify(mWifiConfigManager, never()).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderUninstallation();
         verify(mWifiMetrics).incrementNumPasspointProviderUninstallSuccess();
         verify(mAppOpsManager, never()).stopWatchingMode(
@@ -2192,7 +2196,7 @@ public class PasspointManagerTest extends WifiBaseTest {
                 argThat((c) -> c.FQDN.equals(TEST_FQDN)), eq(TEST_CREATOR_UID), eq(TEST_PACKAGE),
                 eq(false));
         verify(mWifiConfigManager).allowAutojoin(TEST_NETWORK_ID, origWifiConfig.allowAutojoin);
-        verify(mWifiConfigManager, never()).saveToStore(true);
+        verify(mWifiConfigManager, never()).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallation();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallSuccess();
         assertEquals(2, mSharedDataSource.getProviderIndex());
@@ -2211,7 +2215,7 @@ public class PasspointManagerTest extends WifiBaseTest {
                 eq(true), eq(mClock))).thenReturn(newProvider);
         assertTrue(mManager.addOrUpdateProvider(newConfig, TEST_CREATOR_UID, TEST_PACKAGE,
                 true, true, false));
-        verify(mWifiConfigManager, never()).saveToStore(true);
+        verify(mWifiConfigManager, never()).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallation();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallSuccess();
 
@@ -2265,7 +2269,7 @@ public class PasspointManagerTest extends WifiBaseTest {
                 eq(false), eq(mClock))).thenReturn(newProvider);
         assertTrue(mManager.addOrUpdateProvider(newConfig, TEST_CREATOR_UID, TEST_PACKAGE,
                 false, true, false));
-        verify(mWifiConfigManager).saveToStore(true);
+        verify(mWifiConfigManager).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallation();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallSuccess();
 
@@ -2322,7 +2326,7 @@ public class PasspointManagerTest extends WifiBaseTest {
                 eq(true), eq(mClock))).thenReturn(newProvider);
         assertTrue(mManager.addOrUpdateProvider(newConfig, TEST_CREATOR_UID, TEST_PACKAGE1, true,
                 true, false));
-        verify(mWifiConfigManager, never()).saveToStore(true);
+        verify(mWifiConfigManager, never()).saveToStore();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallation();
         verify(mWifiMetrics).incrementNumPasspointProviderInstallSuccess();
 
@@ -2574,9 +2578,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         when(mObjectFactory.makePasspointProvider(config, null,
                 mWifiCarrierInfoManager, 0, 0, null, false, mClock))
                 .thenReturn(mockProvider);
-        List<ScanResult> scanResults = new ArrayList<>() {{
-                add(mock(ScanResult.class));
-            }};
+        List<ScanResult> scanResults = List.of(mock(ScanResult.class));
         when(mockProvider.match(anyMap(), any(RoamingConsortium.class), any(ScanResult.class)))
                 .thenReturn(PasspointMatch.RoamingProvider);
 
@@ -2596,9 +2598,7 @@ public class PasspointManagerTest extends WifiBaseTest {
         when(mObjectFactory.makePasspointProvider(config, null,
                 mWifiCarrierInfoManager, 0, 0, null, false, mClock))
                 .thenReturn(mockProvider);
-        List<ScanResult> scanResults = new ArrayList<>() {{
-                add(mock(ScanResult.class));
-            }};
+        List<ScanResult> scanResults = List.of(mock(ScanResult.class));
         when(mockProvider.match(anyMap(), any(RoamingConsortium.class), any(ScanResult.class)))
                 .thenReturn(PasspointMatch.HomeProvider);
 
@@ -2621,9 +2621,7 @@ public class PasspointManagerTest extends WifiBaseTest {
                 mWifiCarrierInfoManager, 0, 0, null, false, mClock))
                 .thenReturn(mockProvider);
 
-        List<ScanResult> scanResults = new ArrayList<>() {{
-                add(mock(ScanResult.class));
-            }};
+        List<ScanResult> scanResults = List.of(mock(ScanResult.class));
         when(mockProvider.match(anyMap(), any(RoamingConsortium.class), any(ScanResult.class)))
                 .thenReturn(PasspointMatch.None);
 
@@ -2822,7 +2820,7 @@ public class PasspointManagerTest extends WifiBaseTest {
 
         mManager.resetSimPasspointNetwork();
         verify(provider).setAnonymousIdentity(null);
-        verify(mWifiConfigManager, times(3)).saveToStore(true);
+        verify(mWifiConfigManager, times(3)).saveToStore();
     }
 
     /**
@@ -2865,13 +2863,13 @@ public class PasspointManagerTest extends WifiBaseTest {
         verify(provider, times(2)).setUserConnectChoice(null, 0);
 
         verify(provider2, never()).setUserConnectChoice(any(), anyInt());
-        verify(mWifiConfigManager, times(3)).saveToStore(true);
+        verify(mWifiConfigManager, times(3)).saveToStore();
 
         reset(mWifiConfigManager);
         when(provider.getConnectChoice()).thenReturn(null);
         listener.onConnectChoiceRemoved(USER_CONNECT_CHOICE);
         listener.onConnectChoiceRemoved(null);
-        verify(mWifiConfigManager, never()).saveToStore(anyBoolean());
+        verify(mWifiConfigManager, never()).saveToStore();
     }
 
     /*

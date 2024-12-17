@@ -407,6 +407,13 @@ public class ConcreteClientModeManager implements ClientModeManager {
                 if (!mWifiNative.switchClientInterfaceToScanMode(
                         mClientInterfaceName, mTargetRoleChangeInfo.requestorWs)) {
                     mModeListener.onStartFailure(ConcreteClientModeManager.this);
+                    updateConnectModeState(mRole, WifiManager.WIFI_STATE_UNKNOWN,
+                            WifiManager.WIFI_STATE_DISABLING);
+                    updateConnectModeState(mRole, WifiManager.WIFI_STATE_DISABLED,
+                            WifiManager.WIFI_STATE_UNKNOWN);
+                    takeBugReportInterfaceFailureIfNeeded(
+                            "Wi-Fi BugReport (STA interface failure):",
+                            "Fail to switch to scan-only mode in started state");
                 } else {
                     mStateMachine.sendMessage(
                             ClientModeStateMachine.CMD_SWITCH_TO_SCAN_ONLY_MODE_CONTINUE,
@@ -458,6 +465,8 @@ public class ConcreteClientModeManager implements ClientModeManager {
                     return true;
                 }
             }
+        } catch (UnsupportedOperationException ex) {
+            Log.d(TAG, "IMS Manager is not supported.");
         } catch (RuntimeException ex) {
             Log.e(TAG, "IMS Manager is not available.", ex);
         }
@@ -468,6 +477,10 @@ public class ConcreteClientModeManager implements ClientModeManager {
      * Get deferring time before turning off WiFi.
      */
     private int getWifiOffDeferringTimeMs() {
+        if (mRole != ROLE_CLIENT_PRIMARY && !isSecondaryInternet()) {
+            Log.d(getTag(), "Do not defer stop for non-internet providing CMMs");
+            return 0;
+        }
         SubscriptionManager subscriptionManager =
                 mContext.getSystemService(SubscriptionManager.class);
         if (subscriptionManager == null) {
@@ -958,7 +971,7 @@ public class ConcreteClientModeManager implements ClientModeManager {
             }
 
             @Override
-            String getMessageLogRec(int what) {
+            public String getMessageLogRec(int what) {
                 return ConcreteClientModeManager.class.getSimpleName() + "."
                         + IdleState.class.getSimpleName() + "."
                         + getWhatToString(what);
@@ -1037,7 +1050,7 @@ public class ConcreteClientModeManager implements ClientModeManager {
             }
 
             @Override
-            String getMessageLogRec(int what) {
+            public String getMessageLogRec(int what) {
                 return ConcreteClientModeManager.class.getSimpleName() + "."
                         + StartedState.class.getSimpleName() + "."
                         + getWhatToString(what);
@@ -1163,7 +1176,7 @@ public class ConcreteClientModeManager implements ClientModeManager {
             }
 
             @Override
-            String getMessageLogRec(int what) {
+            public String getMessageLogRec(int what) {
                 return ConcreteClientModeManager.class.getSimpleName() + "."
                         + ScanOnlyModeState.class.getSimpleName() + "."
                         + getWhatToString(what);
@@ -1235,7 +1248,7 @@ public class ConcreteClientModeManager implements ClientModeManager {
             }
 
             @Override
-            String getMessageLogRec(int what) {
+            public String getMessageLogRec(int what) {
                 return ConcreteClientModeManager.class.getSimpleName() + "."
                         + ConnectModeState.class.getSimpleName() + "."
                         + getWhatToString(what);
@@ -1369,8 +1382,8 @@ public class ConcreteClientModeManager implements ClientModeManager {
 
     @Override
     public void connectNetwork(NetworkUpdateResult result, ActionListenerWrapper wrapper,
-            int callingUid, @NonNull String packageName) {
-        getClientMode().connectNetwork(result, wrapper, callingUid, packageName);
+            int callingUid, @NonNull String packageName, @Nullable String attributionTag) {
+        getClientMode().connectNetwork(result, wrapper, callingUid, packageName, attributionTag);
     }
 
     @Override
@@ -1416,8 +1429,8 @@ public class ConcreteClientModeManager implements ClientModeManager {
 
     @Override
     public boolean setWifiConnectedNetworkScorer(
-            IBinder binder, IWifiConnectedNetworkScorer scorer) {
-        return getClientMode().setWifiConnectedNetworkScorer(binder, scorer);
+            IBinder binder, IWifiConnectedNetworkScorer scorer, int callerUid) {
+        return getClientMode().setWifiConnectedNetworkScorer(binder, scorer, callerUid);
     }
 
     @Override
@@ -1594,6 +1607,11 @@ public class ConcreteClientModeManager implements ClientModeManager {
     }
 
     @Override
+    public boolean isIpProvisioningTimedOut() {
+        return getClientMode().isIpProvisioningTimedOut();
+    }
+
+    @Override
     public boolean isSupplicantTransientState() {
         return getClientMode().isSupplicantTransientState();
     }
@@ -1700,5 +1718,10 @@ public class ConcreteClientModeManager implements ClientModeManager {
     @Override
     public boolean isMlo() {
         return getClientMode().isMlo();
+    }
+
+    @Override
+    public void onIdleModeChanged(boolean isIdle) {
+        getClientMode().onIdleModeChanged(isIdle);
     }
 }

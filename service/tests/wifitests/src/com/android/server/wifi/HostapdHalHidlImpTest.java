@@ -15,16 +15,30 @@
  */
 package com.android.server.wifi;
 
-import static org.junit.Assert.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 import static org.junit.Assume.assumeTrue;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.anyLong;
 import static org.mockito.Matchers.anyString;
 import static org.mockito.Matchers.eq;
-import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.anyBoolean;
+import static org.mockito.Mockito.anyInt;
+import static org.mockito.Mockito.anyList;
+import static org.mockito.Mockito.anyShort;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.reset;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.app.test.MockAnswerUtil;
-import android.content.Context;
 import android.hardware.wifi.hostapd.V1_0.HostapdStatus;
 import android.hardware.wifi.hostapd.V1_0.HostapdStatusCode;
 import android.hardware.wifi.hostapd.V1_0.IHostapd;
@@ -37,6 +51,7 @@ import android.hidl.manager.V1_0.IServiceNotification;
 import android.net.MacAddress;
 import android.net.wifi.SoftApConfiguration;
 import android.net.wifi.SoftApConfiguration.Builder;
+import android.net.wifi.WifiContext;
 import android.net.wifi.WifiManager;
 import android.os.Handler;
 import android.os.IHwBinder;
@@ -66,6 +81,7 @@ import java.util.ArrayList;
 @SmallTest
 public class HostapdHalHidlImpTest extends WifiBaseTest {
     private static final String IFACE_NAME = "mock-wlan0";
+    private static final String IFACE_NAME_1 = "mock-wlan1";
     private static final String NETWORK_SSID = "test-ssid";
     private static final String NETWORK_PSK = "test-psk";
     private static final String TEST_CLIENT_MAC = "11:22:33:44:55:66";
@@ -74,17 +90,18 @@ public class HostapdHalHidlImpTest extends WifiBaseTest {
     private final int mBand256G = SoftApConfiguration.BAND_2GHZ | SoftApConfiguration.BAND_5GHZ
             | SoftApConfiguration.BAND_6GHZ;
 
-    private @Mock Context mContext;
+    private @Mock WifiContext mContext;
     private @Mock IServiceManager mServiceManagerMock;
     private @Mock IHostapd mIHostapdMock;
     private @Mock WifiNative.HostapdDeathEventHandler mHostapdHalDeathHandler;
     private @Mock WifiNative.SoftApHalCallback mSoftApHalCallback;
+    private @Mock WifiNative.SoftApHalCallback mSoftApHalCallback1;
     private android.hardware.wifi.hostapd.V1_1.IHostapd mIHostapdMockV11;
     private android.hardware.wifi.hostapd.V1_2.IHostapd mIHostapdMockV12;
     private android.hardware.wifi.hostapd.V1_3.IHostapd mIHostapdMockV13;
     private IHostapdCallback mIHostapdCallback;
     private android.hardware.wifi.hostapd.V1_3.IHostapdCallback mIHostapdCallback13;
-    private MockResources mResources;
+    private MockResourceCache mResources;
     HostapdStatus mStatusSuccess;
     HostapdStatus mStatusFailure;
     android.hardware.wifi.hostapd.V1_2.HostapdStatus mStatusSuccess12;
@@ -156,7 +173,7 @@ public class HostapdHalHidlImpTest extends WifiBaseTest {
     @Before
     public void setUp() throws Exception {
         MockitoAnnotations.initMocks(this);
-        mResources = new MockResources();
+        mResources = new MockResourceCache(mContext);
         mResources.setBoolean(R.bool.config_wifi_softap_acs_supported, false);
         mResources.setBoolean(R.bool.config_wifi_softap_ieee80211ac_supported, false);
         mResources.setBoolean(R.bool.config_wifiSoftapIeee80211axSupported, false);
@@ -173,7 +190,7 @@ public class HostapdHalHidlImpTest extends WifiBaseTest {
         mStatusSuccess12 = createHostapdStatus_1_2(HostapdStatusCode.SUCCESS);
         mStatusFailure12 = createHostapdStatus_1_2(HostapdStatusCode.FAILURE_UNKNOWN);
 
-        when(mContext.getResources()).thenReturn(mResources);
+        when(mContext.getResourceCache()).thenReturn(mResources);
         when(mServiceManagerMock.linkToDeath(any(IHwBinder.DeathRecipient.class),
                 anyLong())).thenReturn(true);
         when(mServiceManagerMock.registerForNotifications(anyString(), anyString(),
@@ -1295,12 +1312,19 @@ public class HostapdHalHidlImpTest extends WifiBaseTest {
                 configurationBuilder.build(), true,
                 () -> mSoftApHalCallback.onFailure()));
         verify(mIHostapdMockV13).addAccessPoint_1_3(any(), any());
+        // Register SoftApManager callback
+        mHostapdHal.registerApCallback(IFACE_NAME, mSoftApHalCallback);
+
+        // Add second AP to test that the callbacks are triggered for the correct iface.
+        assertTrue(mHostapdHal.addAccessPoint(IFACE_NAME_1,
+                configurationBuilder.build(), true,
+                () -> mSoftApHalCallback1.onFailure()));
+        mHostapdHal.registerApCallback(IFACE_NAME_1, mSoftApHalCallback1);
 
         // Trigger on failure.
         mIHostapdCallback13.onFailure(IFACE_NAME);
         verify(mSoftApHalCallback).onFailure();
-        // Register SoftApManager callback
-        mHostapdHal.registerApCallback(IFACE_NAME, mSoftApHalCallback);
+        verify(mSoftApHalCallback1, never()).onFailure();
 
         int testFreq = 2412;
         int testBandwidth = Bandwidth.WIFI_BANDWIDTH_20;
@@ -1312,13 +1336,17 @@ public class HostapdHalHidlImpTest extends WifiBaseTest {
         verify(mSoftApHalCallback).onInfoChanged(eq(TEST_AP_INSTANCE), eq(testFreq),
                 eq(mHostapdHal.mapHalBandwidthToSoftApInfo(testBandwidth)),
                 eq(mHostapdHal.mapHalGenerationToWifiStandard(testGeneration)),
-                eq(MacAddress.fromString(TEST_CLIENT_MAC)));
+                eq(MacAddress.fromString(TEST_CLIENT_MAC)), anyList());
+        verify(mSoftApHalCallback1, never()).onInfoChanged(anyString(), anyInt(), anyInt(),
+                anyInt(), any(), anyList());
 
         // Trigger on client connected.
         mIHostapdCallback13.onConnectedClientsChanged(IFACE_NAME, TEST_AP_INSTANCE,
                 MacAddress.fromString(TEST_CLIENT_MAC).toByteArray(), true);
         verify(mSoftApHalCallback).onConnectedClientsChanged(eq(TEST_AP_INSTANCE),
                 eq(MacAddress.fromString(TEST_CLIENT_MAC)), eq(true));
+        verify(mSoftApHalCallback1, never()).onConnectedClientsChanged(anyString(), any(),
+                anyBoolean());
     }
 
     /**

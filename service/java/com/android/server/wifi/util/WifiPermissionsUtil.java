@@ -180,6 +180,7 @@ public class WifiPermissionsUtil {
         try {
             enforceNearbyDevicesPermission(attributionSource, checkForLocation, message);
         } catch (SecurityException e) {
+            Log.e(TAG, "checkNearbyDevicesPermission - " + e);
             return false;
         }
         return true;
@@ -753,7 +754,8 @@ public class WifiPermissionsUtil {
 
     private boolean noteAppOpAllowed(String op, String pkgName, @Nullable String featureId,
             int uid, @Nullable String message) {
-        return mAppOps.noteOp(op, uid, pkgName, featureId, message) == AppOpsManager.MODE_ALLOWED;
+        return mAppOps.noteOpNoThrow(op, uid, pkgName, featureId, message)
+                == AppOpsManager.MODE_ALLOWED;
     }
 
     private boolean checkAppOpAllowed(String op, String pkgName, int uid) {
@@ -910,20 +912,6 @@ public class WifiPermissionsUtil {
         return mWifiPermissionsWrapper.getUidPermission(
                 android.Manifest.permission.CAMERA, uid)
                 == PackageManager.PERMISSION_GRANTED;
-    }
-
-    /**
-     * Returns true if the |callingUid|/\callingPackage| holds SYSTEM_ALERT_WINDOW permission.
-     */
-    public boolean checkSystemAlertWindowPermission(int callingUid, String callingPackage) {
-        final int mode = mAppOps.noteOp(AppOpsManager.OPSTR_SYSTEM_ALERT_WINDOW, callingUid,
-                callingPackage, null, null);
-        if (mode == AppOpsManager.MODE_DEFAULT) {
-            return mWifiPermissionsWrapper.getUidPermission(
-                    Manifest.permission.SYSTEM_ALERT_WINDOW, callingUid)
-                    == PackageManager.PERMISSION_GRANTED;
-        }
-        return mode == AppOpsManager.MODE_ALLOWED;
     }
 
     /**

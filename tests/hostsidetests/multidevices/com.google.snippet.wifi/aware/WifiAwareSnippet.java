@@ -54,7 +54,7 @@ import java.util.function.Consumer;
 /** An example snippet class with a simple Rpc. */
 public class WifiAwareSnippet implements Snippet {
 
-    private Object mLock;
+    private final Object mLock = new Object();
 
     private static class WifiAwareSnippetException extends Exception {
         private static final long SERIAL_VERSION_UID = 1;
@@ -323,7 +323,7 @@ public class WifiAwareSnippet implements Snippet {
         if (!callbackData.pairingAccept) {
             throw new WifiAwareSnippetException("initiatePairingSetup: pairing reject");
         }
-        mWifiAwareManager.removePairedDevice(ALIAS_PUBLISH);
+        mWifiAwareManager.removePairedDevice(ALIAS_SUBSCRIBE);
         AtomicReference<List<String>> aliasList = new AtomicReference<>();
         Consumer<List<String>> consumer = value -> {
             synchronized (mLock) {
@@ -338,7 +338,7 @@ public class WifiAwareSnippet implements Snippet {
         if (aliasList.get().size() != 1 || !ALIAS_PUBLISH.equals(aliasList.get().get(0))) {
             throw new WifiAwareSnippetException("initiatePairingSetup: pairing alias mismatch");
         }
-        mWifiAwareManager.removePairedDevice(ALIAS_SUBSCRIBE);
+        mWifiAwareManager.removePairedDevice(ALIAS_PUBLISH);
         mWifiAwareManager.getPairedDevices(Executors.newSingleThreadScheduledExecutor(), consumer);
         synchronized (mLock) {
             mLock.wait(TEST_WAIT_DURATION_MS);
@@ -374,6 +374,10 @@ public class WifiAwareSnippet implements Snippet {
                     String.format("respondToPairingSetup: pairing request missing %s",
                             callbackData.callbackCode));
         }
+        mPeerHandle = callbackData.peerHandle;
+        if (mPeerHandle == null) {
+            throw new WifiAwareSnippetException("respondToPairingSetup: peerHandle null");
+        }
         if (accept) {
             mDiscoverySession.acceptPairingRequest(callbackData.pairingRequestId, mPeerHandle,
                     ALIAS_SUBSCRIBE, Characteristics.WIFI_AWARE_CIPHER_SUITE_NCS_PK_PASN_128,
@@ -406,7 +410,7 @@ public class WifiAwareSnippet implements Snippet {
         synchronized (mLock) {
             mLock.wait(TEST_WAIT_DURATION_MS);
         }
-        if (aliasList.get().size() != 1 || !ALIAS_PUBLISH.equals(aliasList.get().get(0))) {
+        if (aliasList.get().size() != 1 || !ALIAS_SUBSCRIBE.equals(aliasList.get().get(0))) {
             throw new WifiAwareSnippetException("respondToPairingSetup: pairing alias mismatch");
         }
         mWifiAwareManager.removePairedDevice(ALIAS_SUBSCRIBE);

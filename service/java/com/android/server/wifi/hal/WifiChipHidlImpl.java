@@ -16,7 +16,14 @@
 
 package com.android.server.wifi.hal;
 
+import static android.hardware.wifi.V1_6.WifiChannelWidthInMhz.WIDTH_160;
+import static android.hardware.wifi.V1_6.WifiChannelWidthInMhz.WIDTH_320;
+import static android.hardware.wifi.V1_6.WifiChannelWidthInMhz.WIDTH_40;
+import static android.hardware.wifi.V1_6.WifiChannelWidthInMhz.WIDTH_80;
+import static android.hardware.wifi.V1_6.WifiChannelWidthInMhz.WIDTH_80P80;
 import static android.net.wifi.CoexUnsafeChannel.POWER_CAP_NONE;
+
+import static com.android.server.wifi.util.GeneralUtil.getCapabilityIndex;
 
 import android.annotation.NonNull;
 import android.annotation.Nullable;
@@ -36,6 +43,9 @@ import android.hardware.wifi.V1_6.WifiAntennaMode;
 import android.hardware.wifi.V1_6.WifiRadioCombination;
 import android.hardware.wifi.V1_6.WifiRadioConfiguration;
 import android.net.wifi.CoexUnsafeChannel;
+import android.net.wifi.OuiKeyedData;
+import android.net.wifi.ScanResult;
+import android.net.wifi.WifiAnnotations;
 import android.net.wifi.WifiAvailableChannel;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiScanner;
@@ -56,6 +66,7 @@ import com.android.wifi.resources.R;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.BitSet;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -96,22 +107,22 @@ public class WifiChipHidlImpl implements IWifiChip {
     }
 
     /**
-     * See comments for {@link IWifiChip#createApIface()}
+     * See comments for {@link IWifiChip#createApIface(List)}
      */
     @Override
     @Nullable
-    public WifiApIface createApIface() {
+    public WifiApIface createApIface(@NonNull List<OuiKeyedData> vendorData) {
         String methodStr = "createApIface";
         return validateAndCall(methodStr, null,
                 () -> createApIfaceInternal(methodStr));
     }
 
     /**
-     * See comments for {@link IWifiChip#createBridgedApIface()}
+     * See comments for {@link IWifiChip#createBridgedApIface(List)}
      */
     @Override
     @Nullable
-    public WifiApIface createBridgedApIface() {
+    public WifiApIface createBridgedApIface(@NonNull List<OuiKeyedData> vendorData) {
         String methodStr = "createBridgedApIface";
         return validateAndCall(methodStr, null,
                 () -> createBridgedApIfaceInternal(methodStr));
@@ -228,9 +239,9 @@ public class WifiChipHidlImpl implements IWifiChip {
      * See comments for {@link IWifiChip#getCapabilitiesBeforeIfacesExist()}
      */
     @Override
-    public WifiChip.Response<Long> getCapabilitiesBeforeIfacesExist() {
+    public WifiChip.Response<BitSet> getCapabilitiesBeforeIfacesExist() {
         String methodStr = "getCapabilitiesBeforeIfacesExist";
-        return validateAndCall(methodStr, new WifiChip.Response<>(0L),
+        return validateAndCall(methodStr, new WifiChip.Response<>(new BitSet()),
                 () -> getCapabilitiesBeforeIfacesExistInternal(methodStr));
     }
 
@@ -238,9 +249,9 @@ public class WifiChipHidlImpl implements IWifiChip {
      * See comments for {@link IWifiChip#getCapabilitiesAfterIfacesExist()}
      */
     @Override
-    public WifiChip.Response<Long> getCapabilitiesAfterIfacesExist() {
+    public WifiChip.Response<BitSet> getCapabilitiesAfterIfacesExist() {
         String methodStr = "getCapabilitiesAfterIfacesExist";
-        return validateAndCall(methodStr, new WifiChip.Response<>(0L),
+        return validateAndCall(methodStr, new WifiChip.Response<>(new BitSet()),
                 () -> getCapabilitiesAfterIfacesExistInternal(methodStr));
     }
 
@@ -586,6 +597,15 @@ public class WifiChipHidlImpl implements IWifiChip {
         return false;
     }
 
+    /**
+     * See comments for {@link IWifiChip#setAfcChannelAllowance(WifiChip.AfcChannelAllowance)}
+     */
+    @Override
+    public boolean setAfcChannelAllowance(WifiChip.AfcChannelAllowance afcChannelAllowance) {
+        Log.d(TAG, "setAfcChannelAllowance() is not implemented in hidl.");
+        return false;
+    }
+
     // Internal Implementations
 
     private boolean configureChipInternal(String methodStr, int modeId) {
@@ -783,8 +803,8 @@ public class WifiChipHidlImpl implements IWifiChip {
         return modeResp.value;
     }
 
-    private WifiChip.Response<Long> getCapabilitiesBeforeIfacesExistInternal(String methodStr) {
-        WifiChip.Response<Long> capsResp = new WifiChip.Response<>(0L);
+    private WifiChip.Response<BitSet> getCapabilitiesBeforeIfacesExistInternal(String methodStr) {
+        WifiChip.Response<BitSet> capsResp = new WifiChip.Response<>(new BitSet());
         try {
             // HAL newer than v1.5 supports getting capabilities before creating an interface.
             android.hardware.wifi.V1_5.IWifiChip chip15 = getWifiChipV1_5Mockable();
@@ -806,8 +826,8 @@ public class WifiChipHidlImpl implements IWifiChip {
         return capsResp;
     }
 
-    private WifiChip.Response<Long> getCapabilitiesAfterIfacesExistInternal(String methodStr) {
-        WifiChip.Response<Long> capsResp = new WifiChip.Response<>(0L);
+    private WifiChip.Response<BitSet> getCapabilitiesAfterIfacesExistInternal(String methodStr) {
+        WifiChip.Response<BitSet> capsResp = new WifiChip.Response<>(new BitSet());
         try {
             android.hardware.wifi.V1_5.IWifiChip chip15 = getWifiChipV1_5Mockable();
             android.hardware.wifi.V1_3.IWifiChip chip13 = getWifiChipV1_3Mockable();
@@ -834,7 +854,7 @@ public class WifiChipHidlImpl implements IWifiChip {
             } else {
                 mWifiChip.getCapabilities((status, caps) -> {
                     if (isOk(status, methodStr)) {
-                        capsResp.setValue((long) wifiFeatureMaskFromChipCapabilities(caps));
+                        capsResp.setValue(wifiFeatureMaskFromChipCapabilities(caps));
                         capsResp.setStatusCode(WifiHal.WIFI_STATUS_SUCCESS);
                     } else {
                         capsResp.setStatusCode(
@@ -1032,7 +1052,8 @@ public class WifiChipHidlImpl implements IWifiChip {
                                 channelResp.value = new ArrayList<>();
                                 for (android.hardware.wifi.V1_6.WifiUsableChannel ch : channels) {
                                     channelResp.value.add(new WifiAvailableChannel(ch.channel,
-                                            halToFrameworkIfaceMode(ch.ifaceModeMask)));
+                                            halToFrameworkIfaceMode(ch.ifaceModeMask),
+                                            halToFrameworkChannelWidth(ch.channelBandwidth)));
                                 }
                             }
                         });
@@ -1046,7 +1067,8 @@ public class WifiChipHidlImpl implements IWifiChip {
                                 channelResp.value = new ArrayList<>();
                                 for (android.hardware.wifi.V1_5.WifiUsableChannel ch : channels) {
                                     channelResp.value.add(new WifiAvailableChannel(ch.channel,
-                                            halToFrameworkIfaceMode(ch.ifaceModeMask)));
+                                            halToFrameworkIfaceMode(ch.ifaceModeMask),
+                                            halToFrameworkChannelWidth(ch.channelBandwidth)));
                                 }
                             }
                         });
@@ -1055,6 +1077,23 @@ public class WifiChipHidlImpl implements IWifiChip {
             handleRemoteException(e, methodStr);
         }
         return channelResp.value;
+    }
+
+    private @WifiAnnotations.ChannelWidth int halToFrameworkChannelWidth(int channelBandwidth) {
+        switch (channelBandwidth) {
+            case WIDTH_40:
+                return ScanResult.CHANNEL_WIDTH_40MHZ;
+            case WIDTH_80:
+                return ScanResult.CHANNEL_WIDTH_80MHZ;
+            case WIDTH_160:
+                return ScanResult.CHANNEL_WIDTH_160MHZ;
+            case WIDTH_80P80:
+                return ScanResult.CHANNEL_WIDTH_80MHZ_PLUS_MHZ;
+            case WIDTH_320:
+                return ScanResult.CHANNEL_WIDTH_320MHZ;
+            default:
+                return ScanResult.CHANNEL_WIDTH_20MHZ;
+        }
     }
 
     private boolean registerCallbackInternal(String methodStr, WifiChip.Callback callback) {
@@ -1754,11 +1793,11 @@ public class WifiChipHidlImpl implements IWifiChip {
      * @return bitmask defined by WifiManager.WIFI_FEATURE_*
      */
     @VisibleForTesting
-    int wifiFeatureMaskFromChipCapabilities(int capabilities) {
-        int features = 0;
+    BitSet wifiFeatureMaskFromChipCapabilities(int capabilities) {
+        BitSet features = new BitSet();
         for (int i = 0; i < sChipFeatureCapabilityTranslation.length; i++) {
             if ((capabilities & sChipFeatureCapabilityTranslation[i][1]) != 0) {
-                features |= sChipFeatureCapabilityTranslation[i][0];
+                features.set(getCapabilityIndex(sChipFeatureCapabilityTranslation[i][0]));
             }
         }
         return features;
@@ -1771,14 +1810,14 @@ public class WifiChipHidlImpl implements IWifiChip {
      * @return bitmask defined by WifiManager.WIFI_FEATURE_*
      */
     @VisibleForTesting
-    long wifiFeatureMaskFromChipCapabilities_1_5(int capabilities) {
+    BitSet wifiFeatureMaskFromChipCapabilities_1_5(int capabilities) {
         // First collect features from previous versions
-        long features = wifiFeatureMaskFromChipCapabilities_1_3(capabilities);
+        BitSet features = wifiFeatureMaskFromChipCapabilities_1_3(capabilities);
 
         // Next collect features for V1_5 version
         for (int i = 0; i < sChipFeatureCapabilityTranslation15.length; i++) {
             if ((capabilities & sChipFeatureCapabilityTranslation15[i][1]) != 0) {
-                features |= sChipFeatureCapabilityTranslation15[i][0];
+                features.set(getCapabilityIndex(sChipFeatureCapabilityTranslation15[i][0]));
             }
         }
         return features;
@@ -1791,14 +1830,14 @@ public class WifiChipHidlImpl implements IWifiChip {
      * @return bitmask defined by WifiManager.WIFI_FEATURE_*
      */
     @VisibleForTesting
-    long wifiFeatureMaskFromChipCapabilities_1_3(int capabilities) {
+    BitSet wifiFeatureMaskFromChipCapabilities_1_3(int capabilities) {
         // First collect features from previous versions
-        long features = wifiFeatureMaskFromChipCapabilities(capabilities);
+        BitSet features = wifiFeatureMaskFromChipCapabilities(capabilities);
 
         // Next collect features for V1_3 version
         for (int i = 0; i < sChipFeatureCapabilityTranslation13.length; i++) {
             if ((capabilities & sChipFeatureCapabilityTranslation13[i][1]) != 0) {
-                features |= sChipFeatureCapabilityTranslation13[i][0];
+                features.set(getCapabilityIndex(sChipFeatureCapabilityTranslation13[i][0]));
             }
         }
         return features;

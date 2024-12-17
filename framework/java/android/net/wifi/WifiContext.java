@@ -26,8 +26,10 @@ import android.content.pm.ResolveInfo;
 import android.content.res.AssetManager;
 import android.content.res.Resources;
 import android.net.wifi.util.Environment;
+import android.net.wifi.util.WifiResourceCache;
 import android.os.UserHandle;
 import android.util.Log;
+import android.util.SparseArray;
 
 import androidx.annotation.Nullable;
 
@@ -59,9 +61,14 @@ public class WifiContext extends ContextWrapper {
     private AssetManager mWifiAssetsFromApk;
     private Resources mWifiResourcesFromApk;
     private Resources.Theme mWifiThemeFromApk;
+    private Context mResourcesApkContext;
+    private SparseArray<WifiStringResourceWrapper> mWifiStringResourceWrapperSparseArray =
+            new SparseArray<>();
+    private WifiResourceCache mWifiResourceCache;
 
     public WifiContext(@NonNull Context contextBase) {
         super(contextBase);
+        mWifiResourceCache = new WifiResourceCache(this);
     }
 
     /** Get the package name of ServiceWifiResources.apk */
@@ -134,16 +141,20 @@ public class WifiContext extends ContextWrapper {
         return info.activityInfo.applicationInfo.packageName;
     }
 
-    private Context getResourcesApkContext() {
+    /** Get the Resource APK context */
+    public Context getResourcesApkContext() {
+        if (mResourcesApkContext != null) {
+            return mResourcesApkContext;
+        }
         try {
             String packageName = getWifiOverlayApkPkgName();
             if (packageName != null) {
-                return createPackageContext(packageName, 0);
+                mResourcesApkContext = createPackageContext(packageName, 0);
             }
         } catch (PackageManager.NameNotFoundException e) {
             Log.wtf(TAG, "Failed to load resources", e);
         }
-        return null;
+        return mResourcesApkContext;
     }
 
     /**
@@ -188,6 +199,10 @@ public class WifiContext extends ContextWrapper {
         return mWifiThemeFromApk;
     }
 
+    public WifiResourceCache getResourceCache() {
+        return mWifiResourceCache;
+    }
+
     /** Get the package name that service-wifi runs under. */
     public String getServiceWifiPackageName() {
         return SERVICE_WIFI_PACKAGE_NAME;
@@ -201,12 +216,20 @@ public class WifiContext extends ContextWrapper {
         mWifiAssetsFromApk = null;
         mWifiResourcesFromApk = null;
         mWifiThemeFromApk = null;
+        mResourcesApkContext = null;
+        mWifiStringResourceWrapperSparseArray.clear();
+        mWifiResourceCache.reset();
     }
 
     /**
      * Returns an instance of WifiStringResourceWrapper with the given subId and carrierId.
      */
     public WifiStringResourceWrapper getStringResourceWrapper(int subId, int carrierId) {
-        return new WifiStringResourceWrapper(this, subId, carrierId);
+        if (mWifiStringResourceWrapperSparseArray.contains(subId)) {
+            return mWifiStringResourceWrapperSparseArray.get(subId);
+        }
+        WifiStringResourceWrapper wrapper = new WifiStringResourceWrapper(this, subId, carrierId);
+        mWifiStringResourceWrapperSparseArray.append(subId, wrapper);
+        return wrapper;
     }
 }

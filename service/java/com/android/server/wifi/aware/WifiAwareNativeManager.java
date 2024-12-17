@@ -23,7 +23,9 @@ import android.util.Log;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.wifi.HalDeviceManager;
+import com.android.server.wifi.WifiNative;
 import com.android.server.wifi.hal.WifiNanIface;
+import com.android.wifi.flags.FeatureFlags;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
@@ -33,24 +35,31 @@ import java.io.PrintWriter;
  */
 public class WifiAwareNativeManager {
     private static final String TAG = "WifiAwareNativeManager";
-    private boolean mVerboseHalLoggingEnabled = false;
+    private boolean mVerboseLoggingEnabled = false;
 
     // to be used for synchronizing access to any of the WifiAwareNative objects
     private final Object mLock = new Object();
 
     private WifiAwareStateManager mWifiAwareStateManager;
     private HalDeviceManager mHalDeviceManager;
+    private WifiNative mWifiNative;
     private Handler mHandler;
     private WifiAwareNativeCallback mWifiAwareNativeCallback;
+    private final FeatureFlags mFeatureFlags;
     private WifiNanIface mWifiNanIface = null;
+    private WifiNative.Iface mNanIface;
     private InterfaceDestroyedListener mInterfaceDestroyedListener;
     private int mReferenceCount = 0;
 
     WifiAwareNativeManager(WifiAwareStateManager awareStateManager,
             HalDeviceManager halDeviceManager,
-            WifiAwareNativeCallback wifiAwareNativeCallback) {
+            WifiAwareNativeCallback wifiAwareNativeCallback,
+            WifiNative wifiNative,
+            FeatureFlags featureFlags) {
         mWifiAwareStateManager = awareStateManager;
         mHalDeviceManager = halDeviceManager;
+        mWifiNative = wifiNative;
+        mFeatureFlags = featureFlags;
         mWifiAwareNativeCallback = wifiAwareNativeCallback;
     }
 
@@ -58,9 +67,9 @@ public class WifiAwareNativeManager {
      * Enable/Disable verbose logging.
      */
     public void enableVerboseLogging(boolean verboseEnabled, boolean halVerboseEnabled) {
-        mVerboseHalLoggingEnabled = halVerboseEnabled;
+        mVerboseLoggingEnabled = verboseEnabled;
         if (mWifiNanIface != null) {
-            mWifiNanIface.enableVerboseLogging(mVerboseHalLoggingEnabled);
+            mWifiNanIface.enableVerboseLogging(halVerboseEnabled);
         }
     }
 
@@ -76,13 +85,13 @@ public class WifiAwareNativeManager {
                 new HalDeviceManager.ManagerStatusListener() {
                     @Override
                     public void onStatusChanged() {
-                        if (mVerboseHalLoggingEnabled) Log.v(TAG, "onStatusChanged");
+                        if (mVerboseLoggingEnabled) Log.v(TAG, "onStatusChanged");
                         // only care about isStarted (Wi-Fi started) not isReady - since if not
                         // ready then Wi-Fi will also be down.
                         if (mHalDeviceManager.isStarted()) {
                             mWifiAwareStateManager.tryToGetAwareCapability();
                         } else {
-                            awareIsDown(false);
+                            awareIsDown(mWifiAwareStateManager.isD2dAllowedWhenStaDisabled());
                         }
                     }
                 }, mHandler);
@@ -107,7 +116,7 @@ public class WifiAwareNativeManager {
      */
     public void tryToGetAware(@NonNull WorkSource requestorWs) {
         synchronized (mLock) {
-            if (mVerboseHalLoggingEnabled) {
+            if (mVerboseLoggingEnabled) {
                 Log.d(TAG, "tryToGetAware: mWifiNanIface=" + mWifiNanIface
                         + ", mReferenceCount=" + mReferenceCount + ", requestorWs=" + requestorWs);
             }
@@ -118,27 +127,29 @@ public class WifiAwareNativeManager {
             }
             if (mHalDeviceManager == null) {
                 Log.e(TAG, "tryToGetAware: mHalDeviceManager is null!?");
-                awareIsDown(false);
+                awareIsDown(mWifiAwareStateManager.isD2dAllowedWhenStaDisabled());
                 return;
             }
 
             mInterfaceDestroyedListener = new InterfaceDestroyedListener();
-            WifiNanIface iface = mHalDeviceManager.createNanIface(mInterfaceDestroyedListener,
+            mNanIface = mWifiNative.createNanIface(mInterfaceDestroyedListener,
                     mHandler, requestorWs);
-            if (iface == null) {
+            if (mNanIface != null) {
+                mWifiNanIface = (WifiNanIface) mNanIface.iface;
+            }
+            if (mWifiNanIface == null) {
                 Log.e(TAG, "Was not able to obtain a WifiNanIface (even though enabled!?)");
                 awareIsDown(true);
             } else {
-                if (mVerboseHalLoggingEnabled) Log.v(TAG, "Obtained a WifiNanIface");
-                if (!iface.registerFrameworkCallback(mWifiAwareNativeCallback)) {
+                if (mVerboseLoggingEnabled) Log.v(TAG, "Obtained a WifiNanIface");
+                if (!mWifiNanIface.registerFrameworkCallback(mWifiAwareNativeCallback)) {
                     Log.e(TAG, "Unable to register callback with WifiNanIface");
-                    mHalDeviceManager.removeIface(iface);
-                    awareIsDown(false);
+                    mHalDeviceManager.removeIface(mWifiNanIface);
+                    awareIsDown(mWifiAwareStateManager.isD2dAllowedWhenStaDisabled());
                     return;
                 }
-                mWifiNanIface = iface;
                 mReferenceCount = 1;
-                mWifiNanIface.enableVerboseLogging(mVerboseHalLoggingEnabled);
+                mWifiNanIface.enableVerboseLogging(mVerboseLoggingEnabled);
             }
         }
     }
@@ -147,7 +158,7 @@ public class WifiAwareNativeManager {
      * Release the HAL NAN interface.
      */
     public void releaseAware() {
-        if (mVerboseHalLoggingEnabled) {
+        if (mVerboseLoggingEnabled) {
             Log.d(TAG, "releaseAware: mWifiNanIface=" + mWifiNanIface + ", mReferenceCount="
                     + mReferenceCount);
         }
@@ -168,6 +179,13 @@ public class WifiAwareNativeManager {
             mInterfaceDestroyedListener.active = false;
             mInterfaceDestroyedListener = null;
             mHalDeviceManager.removeIface(mWifiNanIface);
+            if (mNanIface != null) {
+                final int nanIfaceId = mNanIface.id;
+                // HAL may be stop when Nan is toredown,
+                // clean mNanIface first to avoid infinite loop in clean up
+                mNanIface = null;
+                mWifiNative.teardownNanIface(nanIfaceId);
+            }
             mWifiNanIface = null;
             mWifiAwareNativeCallback.resetChannelInfo();
         }
@@ -178,7 +196,7 @@ public class WifiAwareNativeManager {
      */
     public boolean replaceRequestorWs(@NonNull WorkSource requestorWs) {
         synchronized (mLock) {
-            if (mVerboseHalLoggingEnabled) {
+            if (mVerboseLoggingEnabled) {
                 Log.d(TAG, "replaceRequestorWs: mWifiNanIface=" + mWifiNanIface
                         + ", mReferenceCount=" + mReferenceCount + ", requestorWs=" + requestorWs);
             }
@@ -188,7 +206,7 @@ public class WifiAwareNativeManager {
             }
             if (mHalDeviceManager == null) {
                 Log.e(TAG, "tryToGetAware: mHalDeviceManager is null!?");
-                awareIsDown(false);
+                awareIsDown(mWifiAwareStateManager.isD2dAllowedWhenStaDisabled());
                 return false;
             }
 
@@ -198,9 +216,16 @@ public class WifiAwareNativeManager {
 
     private void awareIsDown(boolean markAsAvailable) {
         synchronized (mLock) {
-            if (mVerboseHalLoggingEnabled) {
+            if (mVerboseLoggingEnabled) {
                 Log.d(TAG, "awareIsDown: mWifiNanIface=" + mWifiNanIface
                         + ", mReferenceCount =" + mReferenceCount);
+            }
+            if (mNanIface != null) {
+                final int nanIfaceId = mNanIface.id;
+                // HAL may be stop when Nan is toredown,
+                // clean mNanIface first to avoid infinite loop in clean up
+                mNanIface = null;
+                mWifiNative.teardownNanIface(nanIfaceId);
             }
             mWifiNanIface = null;
             mReferenceCount = 0;
@@ -214,7 +239,7 @@ public class WifiAwareNativeManager {
 
         @Override
         public void onDestroyed(@NonNull String ifaceName) {
-            if (mVerboseHalLoggingEnabled) {
+            if (mVerboseLoggingEnabled) {
                 Log.d(TAG, "Interface was destroyed: mWifiNanIface=" + mWifiNanIface
                         + ", active=" + active);
             }

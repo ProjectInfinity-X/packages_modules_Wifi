@@ -217,7 +217,8 @@ public class WifiLastResortWatchdog {
                                 + "Actually took " + durationMs + " milliseconds.";
                         logv("Triggering bug report for abnormal connection time.");
                         mWifiThreadRunner.post(() ->
-                                mWifiDiagnostics.takeBugReport(bugTitle, bugDetail));
+                                mWifiDiagnostics.takeBugReport(bugTitle, bugDetail),
+                                TAG + "#" + msg.what);
                     }
                 }
                 // Should reset last connection time after each connection regardless if bugreport
@@ -850,13 +851,13 @@ public class WifiLastResortWatchdog {
     private void logv(String s) {
         mLocalLog.log(s);
         if (mVerboseLoggingEnabled) {
-            Log.v(TAG, s);
+            Log.v(TAG, s, null);
         }
     }
 
     private void loge(String s) {
         mLocalLog.log(s);
-        Log.e(TAG, s);
+        Log.e(TAG, s, null);
     }
 
     /**

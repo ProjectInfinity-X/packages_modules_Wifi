@@ -409,7 +409,7 @@ public class OpenNetworkNotifierTest extends WifiBaseTest {
 
         mBroadcastReceiver.onReceive(mContext, createIntent(ACTION_USER_DISMISSED_NOTIFICATION));
 
-        verify(mWifiConfigManager).saveToStore(false /* forceWrite */);
+        verify(mWifiConfigManager).saveToStore();
 
         mNotificationController.clearPendingNotification(true);
         List<ScanDetail> scanResults = mOpenNetworks;
@@ -435,7 +435,7 @@ public class OpenNetworkNotifierTest extends WifiBaseTest {
 
         mBroadcastReceiver.onReceive(mContext, createIntent(ACTION_CONNECT_TO_NETWORK));
 
-        verify(mWifiConfigManager).saveToStore(false /* forceWrite */);
+        verify(mWifiConfigManager).saveToStore();
         verify(mWifiMetrics).setNetworkRecommenderBlocklistSize(OPEN_NET_NOTIFIER_TAG, 1);
 
         List<ScanDetail> scanResults = mOpenNetworks;
@@ -554,7 +554,7 @@ public class OpenNetworkNotifierTest extends WifiBaseTest {
     @Test
     public void actionConnectToNetwork_notificationNotShowing_doesNothing() {
         mBroadcastReceiver.onReceive(mContext, createIntent(ACTION_CONNECT_TO_NETWORK));
-        verify(mConnectHelper, never()).connectToNetwork(any(), any(), anyInt(), any());
+        verify(mConnectHelper, never()).connectToNetwork(any(), any(), anyInt(), any(), any());
     }
 
     /**
@@ -575,7 +575,7 @@ public class OpenNetworkNotifierTest extends WifiBaseTest {
         mBroadcastReceiver.onReceive(mContext, createIntent(ACTION_CONNECT_TO_NETWORK));
 
         verify(mConnectHelper).connectToNetwork(eq(new NetworkUpdateResult(TEST_NETWORK_ID)),
-                any(ActionListenerWrapper.class), eq(Process.SYSTEM_UID), any());
+                any(ActionListenerWrapper.class), eq(Process.SYSTEM_UID), any(), any());
         // Connecting Notification
         verify(mNotificationBuilder).createNetworkConnectingNotification(OPEN_NET_NOTIFIER_TAG,
                 mTestNetwork);
@@ -759,7 +759,7 @@ public class OpenNetworkNotifierTest extends WifiBaseTest {
         ArgumentCaptor<ActionListenerWrapper> connectListenerCaptor =
                 ArgumentCaptor.forClass(ActionListenerWrapper.class);
         verify(mConnectHelper).connectToNetwork(eq(new NetworkUpdateResult(TEST_NETWORK_ID)),
-                connectListenerCaptor.capture(), eq(Process.SYSTEM_UID), any());
+                connectListenerCaptor.capture(), eq(Process.SYSTEM_UID), any(), any());
         ActionListenerWrapper connectListener = connectListenerCaptor.getValue();
 
         // Connecting Notification
@@ -855,7 +855,7 @@ public class OpenNetworkNotifierTest extends WifiBaseTest {
     @Test
     public void removeNetworkFromBlacklist_handlesNull() {
         mNotificationController.handleWifiConnected(null);
-        verify(mWifiConfigManager, never()).saveToStore(false /* forceWrite */);
+        verify(mWifiConfigManager, never()).saveToStore();
     }
 
     /**
@@ -864,7 +864,7 @@ public class OpenNetworkNotifierTest extends WifiBaseTest {
     @Test
     public void removeNetworkFromBlacklist_returnsEarlyIfNothingIsRemoved() {
         mNotificationController.handleWifiConnected(TEST_SSID_1);
-        verify(mWifiConfigManager, never()).saveToStore(false /* forceWrite */);
+        verify(mWifiConfigManager, never()).saveToStore();
     }
 
     /**
@@ -877,7 +877,7 @@ public class OpenNetworkNotifierTest extends WifiBaseTest {
 
         // Simulate the user connecting to TEST_SSID_1 and verify it is removed from the blacklist
         mNotificationController.handleWifiConnected(mTestNetwork.SSID);
-        verify(mWifiConfigManager, times(2)).saveToStore(false /* forceWrite */);
+        verify(mWifiConfigManager, times(2)).saveToStore();
         verify(mWifiMetrics).setNetworkRecommenderBlocklistSize(OPEN_NET_NOTIFIER_TAG, 0);
         ScanResult actual = mNotificationController.recommendNetwork(mOpenNetworks);
         ScanResult expected = mOpenNetworks.get(0).getScanResult();

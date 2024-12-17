@@ -22,6 +22,7 @@ import android.annotation.Nullable;
 import android.content.Context;
 import android.hardware.wifi.WifiStatusCode;
 import android.net.wifi.CoexUnsafeChannel;
+import android.net.wifi.OuiKeyedData;
 import android.net.wifi.WifiAvailableChannel;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiScanner;
@@ -36,6 +37,7 @@ import com.android.server.wifi.util.NativeUtil;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
+import java.util.BitSet;
 import java.util.List;
 import java.util.function.Supplier;
 
@@ -101,6 +103,18 @@ public class WifiChip {
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface WifiAntennaMode {}
+
+    /**
+     * Supported VoIP mode.
+     */
+    public static final int WIFI_VOIP_MODE_OFF = 0;
+    public static final int WIFI_VOIP_MODE_VOICE = 1;
+    @IntDef(prefix = { "WIFI_VOIP_MODE_" }, value = {
+            WIFI_VOIP_MODE_OFF,
+            WIFI_VOIP_MODE_VOICE,
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface WifiVoipMode {}
 
     /**
      * Response containing a value and a status code.
@@ -275,6 +289,43 @@ public class WifiChip {
         public String toString() {
             return "{radioConfigurations=" + radioConfigurations + "}";
         }
+    }
+
+    /**
+     * AFC channel allowance.
+     */
+    public static class AfcChannelAllowance {
+        /**
+         * AFC max permissible information queried from AFC server based on frequency.
+         */
+        public List<AvailableAfcFrequencyInfo> availableAfcFrequencyInfos;
+        /**
+         * AFC max permissible information queried from AFC server based on channel number.
+         */
+        public List<AvailableAfcChannelInfo> availableAfcChannelInfos;
+        /**
+         * The time in UTC at which this information expires, as the difference, measured in
+         * milliseconds, between the expiration time and midnight, January 1, 1970 UTC.
+         */
+        public long availabilityExpireTimeMs;
+    }
+
+    /**
+     * Available AFC frequency info.
+     */
+    public static class AvailableAfcFrequencyInfo {
+        public int startFrequencyMhz = 0;
+        public int endFrequencyMhz = 0;
+        public int maxPsdDbmPerMhz = 0;
+    }
+
+    /**
+     * Available AFC channel info.
+     */
+    public static class AvailableAfcChannelInfo {
+        public int globalOperatingClass = 0;
+        public int channelCfi = 0;
+        public int maxEirpDbm = 0;
     }
 
     /**
@@ -492,21 +543,29 @@ public class WifiChip {
     }
 
     /**
-     * See comments for {@link IWifiChip#createApIface()}
+     * See comments for {@link IWifiChip#createApIface(List)}
      */
     @Nullable
-    public WifiApIface createApIface() {
+    public WifiApIface createApIface(@NonNull List<OuiKeyedData> vendorData) {
+        if (vendorData == null) {
+            Log.e(TAG, "createApIface received null vendorData");
+            return null;
+        }
         return validateAndCall("createApIface", null,
-                () -> mWifiChip.createApIface());
+                () -> mWifiChip.createApIface(vendorData));
     }
 
     /**
-     * See comments for {@link IWifiChip#createBridgedApIface()}
+     * See comments for {@link IWifiChip#createBridgedApIface(List)}
      */
     @Nullable
-    public WifiApIface createBridgedApIface() {
+    public WifiApIface createBridgedApIface(@NonNull List<OuiKeyedData> vendorData) {
+        if (vendorData == null) {
+            Log.e(TAG, "createBridgedApIface received null vendorData");
+            return null;
+        }
         return validateAndCall("createBridgedApIface", null,
-                () -> mWifiChip.createBridgedApIface());
+                () -> mWifiChip.createBridgedApIface(vendorData));
     }
 
     /**
@@ -599,16 +658,16 @@ public class WifiChip {
     /**
      * See comments for {@link IWifiChip#getCapabilitiesBeforeIfacesExist()}
      */
-    public Response<Long> getCapabilitiesBeforeIfacesExist() {
-        return validateAndCall("getCapabilitiesBeforeIfacesExist", new Response<>(0L),
+    public Response<BitSet> getCapabilitiesBeforeIfacesExist() {
+        return validateAndCall("getCapabilitiesBeforeIfacesExist", new Response<>(new BitSet()),
                 () -> mWifiChip.getCapabilitiesBeforeIfacesExist());
     }
 
     /**
      * See comments for {@link IWifiChip#getCapabilitiesAfterIfacesExist()}
      */
-    public Response<Long> getCapabilitiesAfterIfacesExist() {
-        return validateAndCall("getCapabilitiesAfterIfacesExist", new Response<>(0L),
+    public Response<BitSet> getCapabilitiesAfterIfacesExist() {
+        return validateAndCall("getCapabilitiesAfterIfacesExist", new Response<>(new BitSet()),
                 () -> mWifiChip.getCapabilitiesAfterIfacesExist());
     }
 
@@ -901,5 +960,22 @@ public class WifiChip {
         return validateAndCall("enableStaChannelForPeerNetwork", false,
                 () -> mWifiChip.enableStaChannelForPeerNetwork(enableIndoorChannel,
                         enableDfsChannel));
+    }
+
+    /**
+     * See comments for {@link IWifiChip#setAfcChannelAllowance(AfcChannelAllowance)}
+     */
+    public boolean setAfcChannelAllowance(AfcChannelAllowance afcChannelAllowance) {
+        if (afcChannelAllowance == null) return false;
+        return validateAndCall("setAfcChannelAllowance", false,
+                () -> mWifiChip.setAfcChannelAllowance(afcChannelAllowance));
+    }
+
+    /**
+     * See comments for {@link IWifiChip#setVoipMode(int)}
+     */
+    public boolean setVoipMode(@WifiVoipMode int mode) {
+        return validateAndCall("setVoipMode", false,
+                () -> mWifiChip.setVoipMode(mode));
     }
 }

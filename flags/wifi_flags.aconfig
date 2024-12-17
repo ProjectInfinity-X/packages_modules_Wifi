@@ -1,0 +1,172 @@
+package: "com.android.wifi.flags"
+container: "com.android.wifi"
+
+flag {
+    name: "test_flag_function"
+    namespace: "wifi"
+    description: "This flag aim to test the flag release for wifi stack"
+    bug: "301145404"
+}
+
+flag {
+    name: "p2p_ownership"
+    namespace: "wifi"
+    description: "Control the P2P group ownership feature"
+    bug: "215045910"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "p2p_dual"
+    namespace: "wifi"
+    description: "Control the dual P2P group feature"
+    bug: "296063280"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "delay_save_to_store"
+    namespace: "wifi"
+    description: "Control the feature delay the save to store in batch to reduce the blocking time"
+    bug: "302172794"
+}
+
+flag {
+    name: "single_wifi_thread"
+    namespace: "wifi"
+    description: "Control the feature that move all Wifi service to a single thread"
+    bug: "302593617"
+}
+
+flag {
+    name: "network_provider_battery_charging_status"
+    is_exported: true
+    namespace: "wifi"
+    description: "Control the API that allows setting / reading the NetworkProviderInfo's battery charging status"
+    bug: "305067231"
+}
+
+flag {
+    name: "shared_connectivity_broadcast_receiver_test_api"
+    is_exported: true
+    namespace: "wifi"
+    description: "Control the test API for SharedConnectivityManager's getBroadcastReceiver() method"
+    bug: "305067231"
+}
+
+flag {
+    name: "anqp_request_wait_for_response"
+    namespace: "wifi"
+    description: "Make the ANQP request in a queue and wait for the previous response before trigger the next request"
+    bug: "310037751"
+}
+
+flag {
+    name: "android_v_wifi_api"
+    is_exported: true
+    namespace: "wifi"
+    description: "For new API added to Android V"
+    bug: "319927407"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "d2d_when_infra_sta_off"
+    namespace: "wifi"
+    description: "Add new API to configure d2d when infra sta is off"
+    bug: "295792510"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "get_channel_width_api"
+    namespace: "wifi"
+    description: "Add new API to get channel width"
+    bug: "335358378"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "voip_detection_bugfix"
+    namespace: "wifi"
+    description: "Detect VoIP over Wifi and execute optimization"
+    bug: "295885471"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "get_bssid_blocklist_api"
+    is_exported: true
+    namespace: "wifi"
+    description: "Add new API to get BSSID blocklist"
+    bug: "336109216"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "delayed_carrier_network_selection"
+    namespace: "wifi"
+    description: "Delay network selection for some carrier networks until a delay period has passed"
+    bug: "329142362"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "local_only_connection_optimization"
+    namespace: "wifi"
+    description: "optimize local-only connection API"
+    bug: "347117408"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "softap_config_store_max_channel_width"
+    namespace: "wifi"
+    description: "Store MaxChannelBandwidth to SoftAP config"
+    bug: "344450923"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "rsn_overriding"
+    namespace: "wifi"
+    description: "Wi-Fi Alliance RSN Overriding feature"
+    bug: "348669010"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "new_uri_parsing_for_escape_character"
+    namespace: "wifi"
+    description: "New parsing logic for Zxing uri format which support escape character"
+    bug: "342706482"
+    is_fixed_read_only: true
+    metadata {
+        purpose: PURPOSE_BUGFIX
+    }
+}
+
+flag {
+    name: "aware_pairing"
+    is_exported: true
+    namespace: "wifi"
+    description: "Add new API for Aware pairing"
+    bug: "354820259"
+    is_fixed_read_only: true
+}
+
+flag {
+    name: "wifi_scorer_new_stats_collection"
+    namespace: "wifi"
+    description: "Gate WiFi Scorer new stats collection"
+    bug: "367362809"
+}

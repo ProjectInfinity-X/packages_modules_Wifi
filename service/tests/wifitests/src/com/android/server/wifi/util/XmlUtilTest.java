@@ -16,8 +16,15 @@
 
 package com.android.server.wifi.util;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assume.assumeTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import android.net.IpConfiguration;
 import android.net.MacAddress;
@@ -32,6 +39,7 @@ import androidx.test.filters.SmallTest;
 import com.android.internal.util.FastXmlSerializer;
 import com.android.modules.utils.build.SdkLevel;
 import com.android.net.module.util.MacAddressUtils;
+import com.android.server.wifi.OuiKeyedDataUtil;
 import com.android.server.wifi.WifiBaseTest;
 import com.android.server.wifi.WifiConfigurationTestUtil;
 import com.android.server.wifi.util.XmlUtil.IpConfigurationXmlUtil;
@@ -143,7 +151,9 @@ public class XmlUtilTest extends WifiBaseTest {
             throws IOException, XmlPullParserException {
         mWifiConfigStoreEncryptionUtil = mock(WifiConfigStoreEncryptionUtil.class);
         WifiConfiguration wepNetwork = WifiConfigurationTestUtil.createWepNetwork();
+        wepNetwork.wepKeys = WifiConfigurationTestUtil.TEST_WEP_KEYS_WITH_NULL;
         for (int i = 0; i < wepNetwork.wepKeys.length; i++) {
+            if (wepNetwork.wepKeys[i] == null) continue;
             EncryptedData encryptedData = new EncryptedData(new byte[]{(byte) i},
                     new byte[]{(byte) i});
             when(mWifiConfigStoreEncryptionUtil.encrypt(wepNetwork.wepKeys[i].getBytes()))
@@ -163,7 +173,9 @@ public class XmlUtilTest extends WifiBaseTest {
             throws IOException, XmlPullParserException {
         mWifiConfigStoreEncryptionUtil = mock(WifiConfigStoreEncryptionUtil.class);
         WifiConfiguration wepNetwork = WifiConfigurationTestUtil.createWepNetwork();
+        wepNetwork.wepKeys = WifiConfigurationTestUtil.TEST_WEP_KEYS_WITH_NULL;
         for (int i = 0; i < wepNetwork.wepKeys.length; i++) {
+            if (wepNetwork.wepKeys[i] == null) continue;
             when(mWifiConfigStoreEncryptionUtil.encrypt(wepNetwork.wepKeys[i].getBytes()))
                     .thenReturn(null);
         }
@@ -543,6 +555,9 @@ public class XmlUtilTest extends WifiBaseTest {
 
         // Verify that hasNeverDetectedCaptivePortal returns false.
         assertFalse(retrieved.hasNeverDetectedCaptivePortal());
+
+        // Verify that hasEverValidatedInternetAccess returns true.
+        assertTrue(retrieved.hasEverValidatedInternetAccess());
     }
 
     /**
@@ -625,6 +640,73 @@ public class XmlUtilTest extends WifiBaseTest {
         // Verify that macRandomizationSetting is still RANDOMIZATION_PERSISTENT.
         assertEquals(WifiConfiguration.RANDOMIZATION_PERSISTENT,
                 retrieved.second.macRandomizationSetting);
+    }
+
+    /**
+     * Verify serializing/deserializing DHCP hostname setting.
+     * @throws Exception
+     */
+    @Test
+    public void testSendDhcpHostnameEnabledSerializeDeserialize() throws Exception {
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+        config.setSendDhcpHostnameEnabled(true);
+        serializeDeserializeWifiConfiguration(config);
+    }
+
+    /**
+     * Verify that deserializing an XML without SEND_DHCP_HOSTNAME will automatically set the value
+     * to true for secure networks.
+     * @throws IOException
+     * @throws XmlPullParserException
+     */
+    @Test
+    public void testSendDhcpHostnameEnabledUpgradeToTrueForSecure()
+            throws IOException, XmlPullParserException {
+        final XmlSerializer out = new FastXmlSerializer();
+        final ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        out.setOutput(outputStream, StandardCharsets.UTF_8.name());
+        XmlUtil.writeDocumentStart(out, mXmlDocHeader);
+        XmlUtil.writeNextSectionStart(out, WifiConfigurationXmlUtil.XML_TAG_SECURITY_PARAMS_LIST);
+        XmlUtil.writeNextSectionStart(out, WifiConfigurationXmlUtil.XML_TAG_SECURITY_PARAMS);
+        XmlUtil.writeNextValue(out, WifiConfigurationXmlUtil.XML_TAG_SECURITY_TYPE,
+                WifiConfiguration.SECURITY_TYPE_PSK);
+        XmlUtil.writeNextValue(out, WifiConfigurationXmlUtil.XML_TAG_IS_ENABLED, true);
+        XmlUtil.writeNextSectionEnd(out, WifiConfigurationXmlUtil.XML_TAG_SECURITY_PARAMS);
+        XmlUtil.writeNextSectionEnd(out, WifiConfigurationXmlUtil.XML_TAG_SECURITY_PARAMS_LIST);
+        XmlUtil.writeDocumentEnd(out, mXmlDocHeader);
+
+        Pair<String, WifiConfiguration> retrieved =
+                deserializeWifiConfiguration(outputStream.toByteArray(), false);
+
+        assertTrue(retrieved.second.isSendDhcpHostnameEnabled());
+    }
+
+    /**
+     * Verify that deserializing an XML without SEND_DHCP_HOSTNAME will automatically set the value
+     * to true for secure networks.
+     * @throws IOException
+     * @throws XmlPullParserException
+     */
+    @Test
+    public void testSendDhcpHostnameEnabledUpgradeToFalseForOpen()
+            throws IOException, XmlPullParserException {
+        final XmlSerializer out = new FastXmlSerializer();
+        final ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+        out.setOutput(outputStream, StandardCharsets.UTF_8.name());
+        XmlUtil.writeDocumentStart(out, mXmlDocHeader);
+        XmlUtil.writeNextSectionStart(out, WifiConfigurationXmlUtil.XML_TAG_SECURITY_PARAMS_LIST);
+        XmlUtil.writeNextSectionStart(out, WifiConfigurationXmlUtil.XML_TAG_SECURITY_PARAMS);
+        XmlUtil.writeNextValue(out, WifiConfigurationXmlUtil.XML_TAG_SECURITY_TYPE,
+                WifiConfiguration.SECURITY_TYPE_OPEN);
+        XmlUtil.writeNextValue(out, WifiConfigurationXmlUtil.XML_TAG_IS_ENABLED, true);
+        XmlUtil.writeNextSectionEnd(out, WifiConfigurationXmlUtil.XML_TAG_SECURITY_PARAMS);
+        XmlUtil.writeNextSectionEnd(out, WifiConfigurationXmlUtil.XML_TAG_SECURITY_PARAMS_LIST);
+        XmlUtil.writeDocumentEnd(out, mXmlDocHeader);
+
+        Pair<String, WifiConfiguration> retrieved =
+                deserializeWifiConfiguration(outputStream.toByteArray(), false);
+
+        assertFalse(retrieved.second.isSendDhcpHostnameEnabled());
     }
 
     private WifiEnterpriseConfig makeTestWifiEnterpriseConfig() {
@@ -888,5 +970,17 @@ public class XmlUtilTest extends WifiBaseTest {
     public void testConfigurationSerializeForConfigStoreWithEncryptedPreSharedKeyShouldEncrypt()
             throws IOException, XmlPullParserException {
         testConfigStoreWithEncryptedPreSharedKey(true, true);
+    }
+
+    /**
+     * Verify that the vendor data field is serialized and deserialized correctly
+     * when provided.
+     */
+    @Test
+    public void testWifiConfigurationWithVendorData() throws Exception {
+        assumeTrue(SdkLevel.isAtLeastV());
+        WifiConfiguration config = WifiConfigurationTestUtil.createOpenNetwork();
+        config.setVendorData(OuiKeyedDataUtil.createTestOuiKeyedDataList(10));
+        serializeDeserializeWifiConfiguration(config);
     }
 }

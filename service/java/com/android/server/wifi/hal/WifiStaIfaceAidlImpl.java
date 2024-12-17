@@ -16,9 +16,14 @@
 
 package com.android.server.wifi.hal;
 
+import static com.android.server.wifi.hal.WifiHalAidlImpl.isServiceVersionAtLeast;
+import static com.android.server.wifi.util.GeneralUtil.getCapabilityIndex;
+
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.content.Context;
+import android.hardware.wifi.CachedScanData;
+import android.hardware.wifi.CachedScanResult;
 import android.hardware.wifi.IWifiStaIfaceEventCallback;
 import android.hardware.wifi.Ssid;
 import android.hardware.wifi.StaApfPacketFilterCapabilities;
@@ -38,6 +43,8 @@ import android.hardware.wifi.StaRoamingState;
 import android.hardware.wifi.StaScanData;
 import android.hardware.wifi.StaScanDataFlagMask;
 import android.hardware.wifi.StaScanResult;
+import android.hardware.wifi.TwtSession;
+import android.hardware.wifi.TwtSessionStats;
 import android.hardware.wifi.WifiBand;
 import android.hardware.wifi.WifiChannelStats;
 import android.hardware.wifi.WifiDebugPacketFateFrameType;
@@ -45,14 +52,20 @@ import android.hardware.wifi.WifiDebugRxPacketFate;
 import android.hardware.wifi.WifiDebugRxPacketFateReport;
 import android.hardware.wifi.WifiDebugTxPacketFate;
 import android.hardware.wifi.WifiDebugTxPacketFateReport;
+import android.hardware.wifi.WifiRatePreamble;
 import android.hardware.wifi.WifiStatusCode;
 import android.net.MacAddress;
 import android.net.apf.ApfCapabilities;
 import android.net.wifi.ScanResult;
+import android.net.wifi.WifiAnnotations;
 import android.net.wifi.WifiManager;
+import android.net.wifi.WifiManager.RoamingMode;
 import android.net.wifi.WifiScanner;
 import android.net.wifi.WifiSsid;
 import android.net.wifi.WifiUsabilityStatsEntry;
+import android.net.wifi.twt.TwtRequest;
+import android.net.wifi.twt.TwtSessionCallback;
+import android.os.Bundle;
 import android.os.RemoteException;
 import android.os.ServiceSpecificException;
 import android.util.Log;
@@ -63,10 +76,12 @@ import com.android.server.wifi.WifiLinkLayerStats;
 import com.android.server.wifi.WifiLoggerHal;
 import com.android.server.wifi.WifiNative;
 import com.android.server.wifi.util.BitMask;
+import com.android.server.wifi.util.HalAidlUtil;
 import com.android.server.wifi.util.NativeUtil;
 import com.android.wifi.resources.R;
 
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.List;
 
 /**
@@ -82,12 +97,16 @@ public class WifiStaIfaceAidlImpl implements IWifiStaIface {
     private Context mContext;
     private SsidTranslator mSsidTranslator;
 
+    private final boolean mWifiLinkLayerAllRadiosStatsAggregationEnabled;
+
     public WifiStaIfaceAidlImpl(@NonNull android.hardware.wifi.IWifiStaIface staIface,
             @NonNull Context context, @NonNull SsidTranslator ssidTranslator) {
         mWifiStaIface = staIface;
         mContext = context;
         mSsidTranslator = ssidTranslator;
         mHalCallback = new StaIfaceEventCallback();
+        mWifiLinkLayerAllRadiosStatsAggregationEnabled = mContext.getResources()
+                .getBoolean(R.bool.config_wifiLinkLayerAllRadiosStatsAggregationEnabled);
     }
 
     /**
@@ -238,6 +257,9 @@ public class WifiStaIfaceAidlImpl implements IWifiStaIface {
     public WifiNative.ScanCapabilities getBackgroundScanCapabilities() {
         final String methodStr = "getBackgroundScanCapabilities";
         synchronized (mLock) {
+            if (!checkIfaceAndLogFailure(methodStr)) {
+                return null;
+            }
             try {
                 StaBackgroundScanCapabilities halCaps =
                         mWifiStaIface.getBackgroundScanCapabilities();
@@ -261,11 +283,11 @@ public class WifiStaIfaceAidlImpl implements IWifiStaIface {
      * See comments for {@link IWifiStaIface#getCapabilities()}
      */
     @Override
-    public long getCapabilities() {
+    public BitSet getCapabilities() {
         final String methodStr = "getCapabilities";
         synchronized (mLock) {
             try {
-                if (!checkIfaceAndLogFailure(methodStr)) return 0L;
+                if (!checkIfaceAndLogFailure(methodStr)) return new BitSet();
                 long halFeatureSet = mWifiStaIface.getFeatureSet();
                 return halToFrameworkStaFeatureSet(halFeatureSet);
             } catch (RemoteException e) {
@@ -273,7 +295,7 @@ public class WifiStaIfaceAidlImpl implements IWifiStaIface {
             } catch (ServiceSpecificException e) {
                 handleServiceSpecificException(e, methodStr);
             }
-            return 0L;
+            return new BitSet();
         }
     }
 
@@ -364,6 +386,28 @@ public class WifiStaIfaceAidlImpl implements IWifiStaIface {
     }
 
     /**
+     * See comments for {@link IWifiStaIface#getCachedScanData()}
+     */
+    @Override
+    @Nullable
+    public WifiScanner.ScanData getCachedScanData() {
+        final String methodStr = "getCachedScanData";
+        synchronized (mLock) {
+            try {
+                if (!checkIfaceAndLogFailure(methodStr)) return null;
+                CachedScanData scanData = mWifiStaIface.getCachedScanData();
+                return halToFrameworkCachedScanData(scanData);
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+            } catch (ServiceSpecificException e) {
+                handleServiceSpecificException(e, methodStr);
+            }
+            return null;
+        }
+    }
+
+
+    /**
      * See comments for {@link IWifiStaIface#getLinkLayerStats()}
      */
     @Override
@@ -379,6 +423,9 @@ public class WifiStaIfaceAidlImpl implements IWifiStaIface {
                 handleRemoteException(e, methodStr);
             } catch (ServiceSpecificException e) {
                 handleServiceSpecificException(e, methodStr);
+            } catch (IllegalArgumentException e) {
+                // May indicate a malformed return value in the HAL.
+                Log.wtf(TAG, methodStr + " encountered IllegalArgumentException: " + e);
             }
             return null;
         }
@@ -683,6 +730,172 @@ public class WifiStaIfaceAidlImpl implements IWifiStaIface {
         }
     }
 
+    /**
+     * See comments for {@link IWifiStaIface#setRoamingMode(int)}
+     */
+    public @WifiStatusCode int setRoamingMode(@RoamingMode int roamingMode) {
+        final String methodStr = "setRoamingMode";
+        @WifiStatusCode int errorCode = WifiStatusCode.ERROR_UNKNOWN;
+        synchronized (mLock) {
+            try {
+                if (checkIfaceAndLogFailure(methodStr)) {
+                    mWifiStaIface.setRoamingState(frameworkToHalRoamingMode(roamingMode));
+                    errorCode = WifiStatusCode.SUCCESS;
+                }
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+                errorCode = WifiStatusCode.ERROR_NOT_STARTED;
+            } catch (ServiceSpecificException e) {
+                handleServiceSpecificException(e, methodStr);
+                errorCode = e.errorCode;
+            } catch (IllegalArgumentException e) {
+                handleIllegalArgumentException(e, methodStr);
+                errorCode = WifiStatusCode.ERROR_INVALID_ARGS;
+            }
+            return errorCode;
+        }
+    }
+
+    private static byte frameworkToHalRoamingMode(
+            @WifiManager.RoamingMode int mode) {
+        switch (mode) {
+            case WifiManager.ROAMING_MODE_NONE:
+                return StaRoamingState.DISABLED;
+            case WifiManager.ROAMING_MODE_NORMAL:
+                return StaRoamingState.ENABLED;
+            case WifiManager.ROAMING_MODE_AGGRESSIVE:
+                return StaRoamingState.AGGRESSIVE;
+            default:
+                throw new IllegalArgumentException("frameworkToHalRoamingMode Invalid mode: "
+                        + mode);
+        }
+    }
+
+    /**
+     * Get target wake time (TWT) capabilities.
+     *
+     * @return TWT capabilities as Bundle
+     */
+    @Override
+    public Bundle getTwtCapabilities() {
+        final String methodStr = "getTwtCapabilities";
+        synchronized (mLock) {
+            try {
+                if (!isServiceVersionAtLeast(2) || !checkIfaceAndLogFailure(methodStr)) {
+                    return null;
+                }
+                android.hardware.wifi.TwtCapabilities halTwtCapabilities =
+                        mWifiStaIface.twtGetCapabilities();
+                if (halTwtCapabilities == null) return null;
+                Bundle twtCapabilities = new Bundle();
+                twtCapabilities.putBoolean(WifiManager.TWT_CAPABILITIES_KEY_BOOLEAN_TWT_REQUESTER,
+                        halTwtCapabilities.isTwtRequesterSupported);
+                twtCapabilities.putInt(
+                        WifiManager.TWT_CAPABILITIES_KEY_INT_MIN_WAKE_DURATION_MICROS,
+                        halTwtCapabilities.minWakeDurationUs);
+                twtCapabilities.putInt(
+                        WifiManager.TWT_CAPABILITIES_KEY_INT_MAX_WAKE_DURATION_MICROS,
+                        halTwtCapabilities.maxWakeDurationUs);
+                twtCapabilities.putLong(
+                        WifiManager.TWT_CAPABILITIES_KEY_LONG_MIN_WAKE_INTERVAL_MICROS,
+                        halTwtCapabilities.minWakeIntervalUs);
+                twtCapabilities.putLong(
+                        WifiManager.TWT_CAPABILITIES_KEY_LONG_MAX_WAKE_INTERVAL_MICROS,
+                        halTwtCapabilities.maxWakeIntervalUs);
+                return twtCapabilities;
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+            } catch (ServiceSpecificException e) {
+                handleServiceSpecificException(e, methodStr);
+            }
+            return null;
+        }
+    }
+
+    /**
+     * Set up a TWT session
+     *
+     * @param cmdId      Command ID to use for this invocation.
+     * @param twtRequest TWT request configuration to setup TWT session
+     * @return true if successful, false otherwise.
+     */
+    @Override
+    public boolean setupTwtSession(int cmdId, TwtRequest twtRequest) {
+        final String methodStr = "setupTwtSession";
+        synchronized (mLock) {
+            try {
+                if (!isServiceVersionAtLeast(2) || !checkIfaceAndLogFailure(methodStr)) {
+                    return false;
+                }
+                android.hardware.wifi.TwtRequest halTwtRequest =
+                        new android.hardware.wifi.TwtRequest();
+                halTwtRequest.maxWakeDurationUs = twtRequest.getMaxWakeDurationMicros();
+                halTwtRequest.minWakeDurationUs = twtRequest.getMinWakeDurationMicros();
+                halTwtRequest.maxWakeIntervalUs = twtRequest.getMaxWakeIntervalMicros();
+                halTwtRequest.minWakeIntervalUs = twtRequest.getMinWakeIntervalMicros();
+                mWifiStaIface.twtSessionSetup(cmdId, halTwtRequest);
+                return true;
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+            } catch (ServiceSpecificException e) {
+                handleServiceSpecificException(e, methodStr);
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Teardown a TWT session.
+     *
+     * @param cmdId     Command ID to use for this invocation.
+     * @param sessionId TWT session identifier
+     * @return true if successful, false otherwise.
+     */
+    @Override
+    public boolean tearDownTwtSession(int cmdId, int sessionId) {
+        final String methodStr = "tearDownTwtSession";
+        synchronized (mLock) {
+            try {
+                if (!isServiceVersionAtLeast(2) || !checkIfaceAndLogFailure(methodStr)) {
+                    return false;
+                }
+                mWifiStaIface.twtSessionTeardown(cmdId, sessionId);
+                return true;
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+            } catch (ServiceSpecificException e) {
+                handleServiceSpecificException(e, methodStr);
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Get stats for the TWT session.
+     *
+     * @param cmdId     Command ID to use for this invocation.
+     * @param sessionId TWT session identifier
+     * @return true if successful, false otherwise.
+     */
+    @Override
+    public boolean getStatsTwtSession(int cmdId, int sessionId) {
+        final String methodStr = "getStatsTwtSession";
+        synchronized (mLock) {
+            try {
+                if (!isServiceVersionAtLeast(2) || !checkIfaceAndLogFailure(methodStr)) {
+                    return false;
+                }
+                mWifiStaIface.twtSessionGetStats(cmdId, sessionId);
+                return true;
+            } catch (RemoteException e) {
+                handleRemoteException(e, methodStr);
+            } catch (ServiceSpecificException e) {
+                handleServiceSpecificException(e, methodStr);
+            }
+            return false;
+        }
+    }
+
     private class StaIfaceEventCallback extends IWifiStaIfaceEventCallback.Stub {
         @Override
         public void onBackgroundScanFailure(int cmdId) {
@@ -725,8 +938,111 @@ public class WifiStaIfaceAidlImpl implements IWifiStaIface {
         public int getInterfaceVersion() {
             return IWifiStaIfaceEventCallback.VERSION;
         }
-    }
 
+        @Override
+        public void onTwtFailure(int cmdId, byte twtErrorCode) {
+            if (mFrameworkCallback == null) return;
+            @TwtErrorCode int errorCode;
+            switch (twtErrorCode) {
+                case TwtErrorCode.INVALID_PARAMS:
+                    errorCode = TwtSessionCallback.TWT_ERROR_CODE_INVALID_PARAMS;
+                    break;
+                case TwtErrorCode.MAX_SESSION_REACHED:
+                    errorCode = TwtSessionCallback.TWT_ERROR_CODE_MAX_SESSIONS_REACHED;
+                    break;
+                case TwtErrorCode.NOT_AVAILABLE:
+                    errorCode = TwtSessionCallback.TWT_ERROR_CODE_NOT_AVAILABLE;
+                    break;
+                case TwtErrorCode.NOT_SUPPORTED:
+                    errorCode = TwtSessionCallback.TWT_ERROR_CODE_NOT_SUPPORTED;
+                    break;
+                case TwtErrorCode.PEER_NOT_SUPPORTED:
+                    errorCode = TwtSessionCallback.TWT_ERROR_CODE_AP_NOT_SUPPORTED;
+                    break;
+                case TwtErrorCode.PEER_REJECTED:
+                    errorCode = TwtSessionCallback.TWT_ERROR_CODE_AP_REJECTED;
+                    break;
+                case TwtErrorCode.TIMEOUT:
+                    errorCode = TwtSessionCallback.TWT_ERROR_CODE_TIMEOUT;
+                    break;
+                case TwtErrorCode.ALREADY_RESUMED:
+                case TwtErrorCode.ALREADY_SUSPENDED:
+                case TwtErrorCode.FAILURE_UNKNOWN:
+                default:
+                    errorCode = TwtSessionCallback.TWT_REASON_CODE_UNKNOWN;
+            }
+            mFrameworkCallback.onTwtFailure(cmdId, errorCode);
+        }
+
+        @Override
+        public void onTwtSessionCreate(int cmdId, TwtSession twtSession) {
+            if (mFrameworkCallback == null || twtSession == null) return;
+            mFrameworkCallback.onTwtSessionCreate(cmdId, twtSession.wakeDurationUs,
+                    twtSession.wakeDurationUs, twtSession.mloLinkId, twtSession.sessionId);
+        }
+
+        @Override
+        public void onTwtSessionUpdate(int cmdId, TwtSession twtSession) {
+            //TODO: Implementation
+        }
+
+        @Override
+        public void onTwtSessionResume(int cmdId, int sessionId) {
+            //TODO: Implementation
+        }
+
+        @Override
+        public void onTwtSessionSuspend(int cmdId, int sessionId) {
+            //TODO: Implementation
+        }
+
+        @Override
+        public void onTwtSessionTeardown(int cmdId, int twtSessionId, byte twtReasonCode) {
+            if (mFrameworkCallback == null) return;
+            @TwtTeardownReasonCode int reasonCode;
+            switch (twtReasonCode) {
+                case TwtTeardownReasonCode.INTERNALLY_INITIATED:
+                    reasonCode = TwtSessionCallback.TWT_REASON_CODE_INTERNALLY_INITIATED;
+                    break;
+                case TwtTeardownReasonCode.LOCALLY_REQUESTED:
+                    reasonCode = TwtSessionCallback.TWT_REASON_CODE_LOCALLY_REQUESTED;
+                    break;
+                case TwtTeardownReasonCode.PEER_INITIATED:
+                    reasonCode = TwtSessionCallback.TWT_REASON_CODE_PEER_INITIATED;
+                    break;
+                case TwtTeardownReasonCode.UNKNOWN:
+                default:
+                    reasonCode = TwtSessionCallback.TWT_REASON_CODE_UNKNOWN;
+            }
+            mFrameworkCallback.onTwtSessionTeardown(cmdId, twtSessionId, reasonCode);
+        }
+
+        @Override
+        public void onTwtSessionStats(int cmdId, int twtSessionId,
+                TwtSessionStats twtSessionStats) {
+            if (mFrameworkCallback == null) return;
+            Bundle twtStats = new Bundle();
+            twtStats.putInt(
+                    android.net.wifi.twt.TwtSession.TWT_STATS_KEY_INT_AVERAGE_TX_PACKET_COUNT,
+                    twtSessionStats.avgTxPktCount);
+            twtStats.putInt(
+                    android.net.wifi.twt.TwtSession.TWT_STATS_KEY_INT_AVERAGE_TX_PACKET_SIZE,
+                    twtSessionStats.avgTxPktSize);
+            twtStats.putInt(
+                    android.net.wifi.twt.TwtSession.TWT_STATS_KEY_INT_AVERAGE_RX_PACKET_COUNT,
+                    twtSessionStats.avgRxPktCount);
+            twtStats.putInt(
+                    android.net.wifi.twt.TwtSession.TWT_STATS_KEY_INT_AVERAGE_RX_PACKET_SIZE,
+                    twtSessionStats.avgRxPktSize);
+            twtStats.putInt(
+                    android.net.wifi.twt.TwtSession.TWT_STATS_KEY_INT_AVERAGE_EOSP_DURATION_MICROS,
+                    twtSessionStats.avgEospDurationUs);
+            twtStats.putInt(
+                    android.net.wifi.twt.TwtSession.TWT_STATS_KEY_INT_AVERAGE_EOSP_DURATION_MICROS,
+                    twtSessionStats.eospCount);
+            mFrameworkCallback.onTwtSessionStats(cmdId, twtSessionId, twtStats);
+        }
+    }
 
     // Utilities
 
@@ -787,6 +1103,76 @@ public class WifiStaIfaceAidlImpl implements IWifiStaIface {
                             WifiScanner.WIFI_BAND_UNSPECIFIED, frameworkScanResults);
         }
         return frameworkScanDatas;
+    }
+
+    @WifiAnnotations.WifiStandard
+    private static int wifiRatePreambleToWifiStandard(int wifiRatePreamble) {
+        switch (wifiRatePreamble) {
+            case WifiRatePreamble.CCK:
+            case WifiRatePreamble.OFDM:
+                return ScanResult.WIFI_STANDARD_LEGACY;
+            case WifiRatePreamble.HT:
+                return ScanResult.WIFI_STANDARD_11N;
+            case WifiRatePreamble.VHT:
+                return ScanResult.WIFI_STANDARD_11AC;
+            case WifiRatePreamble.HE:
+                return ScanResult.WIFI_STANDARD_11AX;
+            case WifiRatePreamble.EHT:
+                return ScanResult.WIFI_STANDARD_11BE;
+            default:
+                return ScanResult.WIFI_STANDARD_UNKNOWN;
+        }
+    }
+
+    private ScanResult halToFrameworkCachedScanResult(CachedScanResult scanResult) {
+        if (scanResult == null) return null;
+        WifiSsid originalSsid = WifiSsid.fromBytes(scanResult.ssid);
+        MacAddress bssid;
+        try {
+            bssid = MacAddress.fromString(NativeUtil.macAddressFromByteArray(scanResult.bssid));
+        } catch (IllegalArgumentException e) {
+            Log.e(TAG, "Failed to get BSSID of scan result: " + e);
+            return null;
+        }
+        ScanResult frameworkScanResult = new ScanResult();
+        frameworkScanResult.setWifiSsid(mSsidTranslator.getTranslatedSsidAndRecordBssidCharset(
+                originalSsid, bssid));
+        frameworkScanResult.BSSID = bssid.toString();
+        frameworkScanResult.level = scanResult.rssiDbm;
+        frameworkScanResult.frequency = scanResult.frequencyMhz;
+        frameworkScanResult.timestamp = scanResult.timeStampInUs;
+        frameworkScanResult.channelWidth = HalAidlUtil
+                .getChannelBandwidthFromHal(scanResult.channelWidthMhz);
+        frameworkScanResult.setWifiStandard(
+                wifiRatePreambleToWifiStandard(scanResult.preambleType));
+        return frameworkScanResult;
+    }
+
+    private ScanResult[] aidlToFrameworkCachedScanResults(CachedScanResult[] cachedScanResults) {
+        if (cachedScanResults == null) return new ScanResult[0];
+        List<ScanResult> frameworkScanResults = new ArrayList<>();
+        for (CachedScanResult cachedScanResult : cachedScanResults) {
+            ScanResult frameworkScanResult = halToFrameworkCachedScanResult(cachedScanResult);
+            if (frameworkScanResult == null) {
+                Log.e(TAG, "aidlToFrameworkCachedScanResults: unable to convert aidl to framework "
+                        + "scan result!");
+                continue;
+            }
+            frameworkScanResults.add(frameworkScanResult);
+        }
+        return frameworkScanResults.toArray(new ScanResult[0]);
+    }
+
+    private WifiScanner.ScanData halToFrameworkCachedScanData(CachedScanData cachedScanData) {
+        if (cachedScanData == null) return null;
+        ScanResult[] scanResults = aidlToFrameworkCachedScanResults(
+                cachedScanData.cachedScanResults);
+
+        // Todo b/319658055: map cachedScanData.scannedFrequenciesMhz to WifiScanner.WifiBand
+        WifiScanner.ScanData frameworkScanData = new WifiScanner.ScanData(0, 0,
+                0, WifiScanner.WIFI_BAND_UNSPECIFIED, scanResults);
+
+        return frameworkScanData;
     }
 
     private static StaRoamingConfig frameworkToHalStaRoamingConfig(List<MacAddress> bssidBlocklist,
@@ -881,55 +1267,60 @@ public class WifiStaIfaceAidlImpl implements IWifiStaIface {
     }
 
     @VisibleForTesting
-    protected static long halToFrameworkStaFeatureSet(long halFeatureSet) {
-        long features = 0;
+    protected static BitSet halToFrameworkStaFeatureSet(long halFeatureSet) {
+        BitSet features = new BitSet();
         if (hasCapability(halFeatureSet,
                 android.hardware.wifi.IWifiStaIface.FeatureSetMask.HOTSPOT)) {
-            features |= WifiManager.WIFI_FEATURE_PASSPOINT;
+            features.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_PASSPOINT));
         }
         if (hasCapability(halFeatureSet,
                 android.hardware.wifi.IWifiStaIface.FeatureSetMask.BACKGROUND_SCAN)) {
-            features |= WifiManager.WIFI_FEATURE_SCANNER;
+            features.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_SCANNER));
         }
         if (hasCapability(halFeatureSet,
                 android.hardware.wifi.IWifiStaIface.FeatureSetMask.PNO)) {
-            features |= WifiManager.WIFI_FEATURE_PNO;
+            features.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_PNO));
         }
         if (hasCapability(halFeatureSet,
                 android.hardware.wifi.IWifiStaIface.FeatureSetMask.TDLS)) {
-            features |= WifiManager.WIFI_FEATURE_TDLS;
+            features.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_TDLS));
         }
         if (hasCapability(halFeatureSet,
                 android.hardware.wifi.IWifiStaIface.FeatureSetMask.TDLS_OFFCHANNEL)) {
-            features |= WifiManager.WIFI_FEATURE_TDLS_OFFCHANNEL;
+            features.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_TDLS_OFFCHANNEL));
         }
         if (hasCapability(halFeatureSet,
                 android.hardware.wifi.IWifiStaIface.FeatureSetMask.LINK_LAYER_STATS)) {
-            features |= WifiManager.WIFI_FEATURE_LINK_LAYER_STATS;
+            features.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_LINK_LAYER_STATS));
         }
         if (hasCapability(halFeatureSet,
                 android.hardware.wifi.IWifiStaIface.FeatureSetMask.RSSI_MONITOR)) {
-            features |= WifiManager.WIFI_FEATURE_RSSI_MONITOR;
+            features.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_RSSI_MONITOR));
         }
         if (hasCapability(halFeatureSet,
                 android.hardware.wifi.IWifiStaIface.FeatureSetMask.KEEP_ALIVE)) {
-            features |= WifiManager.WIFI_FEATURE_MKEEP_ALIVE;
+            features.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_MKEEP_ALIVE));
         }
         if (hasCapability(halFeatureSet,
                 android.hardware.wifi.IWifiStaIface.FeatureSetMask.ND_OFFLOAD)) {
-            features |= WifiManager.WIFI_FEATURE_CONFIG_NDO;
+            features.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_CONFIG_NDO));
         }
         if (hasCapability(halFeatureSet,
                 android.hardware.wifi.IWifiStaIface.FeatureSetMask.CONTROL_ROAMING)) {
-            features |= WifiManager.WIFI_FEATURE_CONTROL_ROAMING;
+            features.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_CONTROL_ROAMING));
         }
         if (hasCapability(halFeatureSet,
                 android.hardware.wifi.IWifiStaIface.FeatureSetMask.PROBE_IE_ALLOWLIST)) {
-            features |= WifiManager.WIFI_FEATURE_IE_WHITELIST;
+            features.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_IE_WHITELIST));
         }
         if (hasCapability(halFeatureSet,
                 android.hardware.wifi.IWifiStaIface.FeatureSetMask.SCAN_RAND)) {
-            features |= WifiManager.WIFI_FEATURE_SCAN_RAND;
+            features.set(getCapabilityIndex(WifiManager.WIFI_FEATURE_SCAN_RAND));
+        }
+        if (hasCapability(halFeatureSet,
+                android.hardware.wifi.IWifiStaIface.FeatureSetMask.ROAMING_MODE_CONTROL)) {
+            features.set(
+                    getCapabilityIndex(WifiManager.WIFI_FEATURE_AGGRESSIVE_ROAMING_MODE_SUPPORT));
         }
         return features;
     }
@@ -1101,9 +1492,7 @@ public class WifiStaIfaceAidlImpl implements IWifiStaIface {
 
     private void aggregateFrameworkRadioStatsFromAidl(int radioIndex,
             WifiLinkLayerStats stats, StaLinkLayerRadioStats aidlRadioStats) {
-        if (!mContext.getResources()
-                .getBoolean(R.bool.config_wifiLinkLayerAllRadiosStatsAggregationEnabled)
-                && radioIndex > 0) {
+        if (!mWifiLinkLayerAllRadiosStatsAggregationEnabled && radioIndex > 0) {
             return;
         }
         // Aggregate the radio stats from all the radios

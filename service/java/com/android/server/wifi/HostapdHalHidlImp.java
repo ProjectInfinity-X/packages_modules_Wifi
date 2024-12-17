@@ -16,7 +16,6 @@
 package com.android.server.wifi;
 
 import android.annotation.NonNull;
-import android.content.Context;
 import android.hardware.wifi.hostapd.V1_0.HostapdStatus;
 import android.hardware.wifi.hostapd.V1_0.HostapdStatusCode;
 import android.hardware.wifi.hostapd.V1_0.IHostapd;
@@ -31,7 +30,9 @@ import android.net.wifi.ScanResult;
 import android.net.wifi.SoftApConfiguration;
 import android.net.wifi.SoftApConfiguration.BandType;
 import android.net.wifi.SoftApInfo;
+import android.net.wifi.WifiContext;
 import android.net.wifi.WifiManager;
+import android.net.wifi.util.WifiResourceCache;
 import android.os.Handler;
 import android.os.IHwBinder.DeathRecipient;
 import android.os.RemoteException;
@@ -74,19 +75,20 @@ public class HostapdHalHidlImp implements IHostapdHal {
     private final Object mLock = new Object();
     private boolean mVerboseLoggingEnabled = false;
     private boolean mVerboseHalLoggingEnabled = false;
-    private final Context mContext;
+    private final WifiContext mContext;
     private final Handler mEventHandler;
 
     // Hostapd HAL interface objects
     private IServiceManager mIServiceManager;
     private IHostapd mIHostapd;
     private HashMap<String, Runnable> mSoftApFailureListeners = new HashMap<>();
-    private SoftApHalCallback mSoftApEventListener;
+    private HashMap<String, SoftApHalCallback> mSoftApHalCallbacks = new HashMap<>();
     private HostapdDeathEventHandler mDeathEventHandler;
     private ServiceManagerDeathRecipient mServiceManagerDeathRecipient;
     private HostapdDeathRecipient mHostapdDeathRecipient;
     // Death recipient cookie registered for current hostapd instance.
     private long mDeathRecipientCookie = 0;
+    private final WifiResourceCache mResourceCache;
 
     private final IServiceNotification mServiceNotificationCallback =
             new IServiceNotification.Stub() {
@@ -131,11 +133,12 @@ public class HostapdHalHidlImp implements IHostapdHal {
         }
     }
 
-    public HostapdHalHidlImp(@NonNull Context context, @NonNull Handler handler) {
+    public HostapdHalHidlImp(@NonNull WifiContext context, @NonNull Handler handler) {
         mContext = context;
         mEventHandler = handler;
         mServiceManagerDeathRecipient = new ServiceManagerDeathRecipient();
         mHostapdDeathRecipient = new HostapdDeathRecipient();
+        mResourceCache = mContext.getResourceCache();
         Log.d(TAG, "init HostapdHalHidlImp");
     }
 
@@ -395,10 +398,10 @@ public class HostapdHalHidlImp implements IHostapdHal {
     }
 
     /**
-     * Register the provided callback handler for SoftAp events.
+     * Register the provided callback handler for SoftAp events on the specified iface.
      * <p>
-     * Note that only one callback can be registered at a time - any registration overrides previous
-     * registrations.
+     * Note that only one callback can be registered per iface at a time - any registration on the
+     * same iface overrides previous registrations.
      *
      * @param ifaceName Name of the interface.
      * @param listener Callback listener for AP events.
@@ -417,7 +420,7 @@ public class HostapdHalHidlImp implements IHostapdHal {
                 Log.d(TAG, "The current HAL doesn't support event callback.");
                 return false;
             }
-            mSoftApEventListener = listener;
+            mSoftApHalCallbacks.put(ifaceName, listener);
             Log.i(TAG, "registerApCallback Successful in " + ifaceName);
             return true;
         }
@@ -526,7 +529,7 @@ public class HostapdHalHidlImp implements IHostapdHal {
                     return false;
                 }
                 mSoftApFailureListeners.remove(ifaceName);
-                mSoftApEventListener = null;
+                mSoftApHalCallbacks.remove(ifaceName);
                 return true;
             } catch (RemoteException e) {
                 handleRemoteException(e, methodStr);
@@ -790,16 +793,16 @@ public class HostapdHalHidlImp implements IHostapdHal {
         ifaceParams12.hwModeParams.enable6GhzBand =
                 ApConfigUtil.isBandSupported(SoftApConfiguration.BAND_6GHZ, mContext);
         ifaceParams12.hwModeParams.enableHeSingleUserBeamformer =
-                mContext.getResources().getBoolean(
+                mResourceCache.getBoolean(
                         R.bool.config_wifiSoftapHeSuBeamformerSupported);
         ifaceParams12.hwModeParams.enableHeSingleUserBeamformee =
-                mContext.getResources().getBoolean(
+                mResourceCache.getBoolean(
                         R.bool.config_wifiSoftapHeSuBeamformeeSupported);
         ifaceParams12.hwModeParams.enableHeMultiUserBeamformer =
-                mContext.getResources().getBoolean(
+                mResourceCache.getBoolean(
                         R.bool.config_wifiSoftapHeMuBeamformerSupported);
         ifaceParams12.hwModeParams.enableHeTargetWakeTime =
-                mContext.getResources().getBoolean(R.bool.config_wifiSoftapHeTwtSupported);
+                mResourceCache.getBoolean(R.bool.config_wifiSoftapHeTwtSupported);
     }
 
     private android.hardware.wifi.hostapd.V1_0.IHostapd.IfaceParams
@@ -807,12 +810,12 @@ public class HostapdHalHidlImp implements IHostapdHal {
         IHostapd.IfaceParams ifaceParamsV1_0 = new IHostapd.IfaceParams();
         ifaceParamsV1_0.ifaceName = ifaceName;
         ifaceParamsV1_0.hwModeParams.enable80211N = true;
-        ifaceParamsV1_0.hwModeParams.enable80211AC = mContext.getResources().getBoolean(
+        ifaceParamsV1_0.hwModeParams.enable80211AC = mResourceCache.getBoolean(
                 R.bool.config_wifi_softap_ieee80211ac_supported);
         boolean enableAcs = ApConfigUtil.isAcsSupported(mContext) && config.getChannel() == 0;
         if (enableAcs) {
             ifaceParamsV1_0.channelParams.enableAcs = true;
-            ifaceParamsV1_0.channelParams.acsShouldExcludeDfs = !mContext.getResources()
+            ifaceParamsV1_0.channelParams.acsShouldExcludeDfs = !mResourceCache
                     .getBoolean(R.bool.config_wifiSoftapAcsIncludeDfs);
         }
         ifaceParamsV1_0.channelParams.channel = config.getChannel();
@@ -832,12 +835,12 @@ public class HostapdHalHidlImp implements IHostapdHal {
         if (ifaceParamsV10.channelParams.enableAcs) {
             if ((config.getBand() & SoftApConfiguration.BAND_2GHZ) != 0) {
                 ifaceParamsV1_1.channelParams.acsChannelRanges.addAll(
-                        toAcsChannelRanges(mContext.getResources().getString(
+                        toAcsChannelRanges(mResourceCache.getString(
                                 R.string.config_wifiSoftap2gChannelList)));
             }
             if ((config.getBand() & SoftApConfiguration.BAND_5GHZ) != 0) {
                 ifaceParamsV1_1.channelParams.acsChannelRanges.addAll(
-                        toAcsChannelRanges(mContext.getResources().getString(
+                        toAcsChannelRanges(mResourceCache.getString(
                                 R.string.config_wifiSoftap5gChannelList)));
             }
         }
@@ -1070,15 +1073,15 @@ public class HostapdHalHidlImp implements IHostapdHal {
         String oemConfig;
         switch (band) {
             case SoftApConfiguration.BAND_2GHZ:
-                oemConfig = mContext.getResources().getString(
+                oemConfig = mResourceCache.getString(
                             R.string.config_wifiSoftap2gChannelList);
                 break;
             case SoftApConfiguration.BAND_5GHZ:
-                oemConfig = mContext.getResources().getString(
+                oemConfig = mResourceCache.getString(
                             R.string.config_wifiSoftap5gChannelList);
                 break;
             case SoftApConfiguration.BAND_6GHZ:
-                oemConfig = mContext.getResources().getString(
+                oemConfig = mResourceCache.getString(
                             R.string.config_wifiSoftap6gChannelList);
                 break;
             default:
@@ -1273,11 +1276,13 @@ public class HostapdHalHidlImp implements IHostapdHal {
                 int frequency, int bandwidth, int generation, byte[] apIfaceInstanceMacAddress) {
             Log.d(TAG, "onApInstanceInfoChanged on " + ifaceName + " / " + apIfaceInstance);
             try {
-                if (mSoftApEventListener != null) {
-                    mSoftApEventListener.onInfoChanged(apIfaceInstance, frequency,
+                SoftApHalCallback callback = mSoftApHalCallbacks.get(ifaceName);
+                if (callback != null) {
+                    callback.onInfoChanged(apIfaceInstance, frequency,
                             mapHalBandwidthToSoftApInfo(bandwidth),
                             mapHalGenerationToWifiStandard(generation),
-                            MacAddress.fromBytes(apIfaceInstanceMacAddress));
+                            MacAddress.fromBytes(apIfaceInstanceMacAddress),
+                            Collections.emptyList());
                 }
             } catch (IllegalArgumentException iae) {
                 Log.e(TAG, " Invalid apIfaceInstanceMacAddress, " + iae);
@@ -1291,8 +1296,9 @@ public class HostapdHalHidlImp implements IHostapdHal {
                 Log.d(TAG, "onConnectedClientsChanged on " + ifaceName + " / " + apIfaceInstance
                         + " and Mac is " + MacAddress.fromBytes(clientAddress).toString()
                         + " isConnected: " + isConnected);
-                if (mSoftApEventListener != null) {
-                    mSoftApEventListener.onConnectedClientsChanged(apIfaceInstance,
+                SoftApHalCallback callback = mSoftApHalCallbacks.get(ifaceName);
+                if (callback != null) {
+                    callback.onConnectedClientsChanged(apIfaceInstance,
                             MacAddress.fromBytes(clientAddress), isConnected);
                 }
             } catch (IllegalArgumentException iae) {

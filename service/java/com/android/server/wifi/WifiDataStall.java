@@ -306,6 +306,43 @@ public class WifiDataStall {
         return mRxTputKbps;
     }
 
+    public static class Speeds {
+        public int DownstreamKbps = INVALID_THROUGHPUT;
+        public int UpstreamKbps = INVALID_THROUGHPUT;
+    }
+
+    /**
+     * Returns link capacity estimate derived from ThrouhgputPredictor.
+     */
+    public Speeds getThrouhgputPredictorSpeeds(
+            WifiInfo wifiInfo,
+            ConnectionCapabilities connectionCapabilities) {
+        // Defaults to INVALID_THROUGHPUT.
+        Speeds speeds = new Speeds();
+
+        if (wifiInfo == null) {
+            return speeds;
+        }
+        int currFrequency = wifiInfo.getFrequency();
+        int rssi = wifiInfo.getRssi();
+        if (rssi == WifiInfo.INVALID_RSSI) {
+            return speeds;
+        }
+
+        if (connectionCapabilities == null) {
+            return speeds;
+        }
+
+        int ccaLevel = mWifiChannelUtilization.getUtilizationRatio(currFrequency);
+
+        speeds.DownstreamKbps = mThroughputPredictor.predictRxThroughput(connectionCapabilities,
+                rssi, currFrequency, ccaLevel) * 1000;
+        speeds.UpstreamKbps = mThroughputPredictor.predictTxThroughput(connectionCapabilities,
+                rssi, currFrequency, ccaLevel) * 1000;
+
+        return speeds;
+    }
+
     /**
      * Update data stall detection, check throughput sufficiency and report wifi health stat
      * with the latest link layer stats
@@ -432,7 +469,7 @@ public class WifiDataStall {
         int maxTimeDeltaMs = mWifiGlobals.getPollRssiIntervalMillis()
                 + MAX_TIME_MARGIN_LAST_TWO_POLLS_MS;
         if (timeDeltaLastTwoPollsMs > 0 && timeDeltaLastTwoPollsMs <= maxTimeDeltaMs) {
-            mWifiMetrics.incrementConnectionDuration(timeDeltaLastTwoPollsMs,
+            mWifiMetrics.incrementConnectionDuration(ifaceName, timeDeltaLastTwoPollsMs,
                     mIsThroughputSufficient, mIsCellularDataAvailable, wifiInfo.getRssi(),
                     mTxTputKbps, mRxTputKbps);
         }
@@ -595,7 +632,7 @@ public class WifiDataStall {
 
     private void logd(String string) {
         if (mVerboseLoggingEnabled) {
-            Log.d(TAG, string);
+            Log.d(TAG, string, null);
         }
     }
 }

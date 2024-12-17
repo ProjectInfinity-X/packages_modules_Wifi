@@ -23,9 +23,11 @@ import android.net.wifi.hotspot2.IProvisioningCallback;
 import android.net.DhcpInfo;
 import android.net.DhcpOption;
 import android.net.Network;
+import android.net.TetheringManager.TetheringRequest;
 import android.net.wifi.CoexUnsafeChannel;
 import android.net.wifi.IActionListener;
 import android.net.wifi.IBooleanListener;
+import android.net.wifi.IByteArrayListener;
 import android.net.wifi.ICoexCallback;
 import android.net.wifi.IDppCallback;
 import android.net.wifi.IIntegerListener;
@@ -34,10 +36,12 @@ import android.net.wifi.ILastCallerListener;
 import android.net.wifi.IListListener;
 import android.net.wifi.ILocalOnlyHotspotCallback;
 import android.net.wifi.ILocalOnlyConnectionStatusListener;
+import android.net.wifi.IMapListener;
 import android.net.wifi.INetworkRequestMatchCallback;
 import android.net.wifi.IOnWifiActivityEnergyInfoListener;
 import android.net.wifi.IOnWifiDriverCountryCodeChangedListener;
 import android.net.wifi.IWifiNetworkStateChangedListener;
+import android.net.wifi.IMacAddressListListener;
 import android.net.wifi.IOnWifiUsabilityStatsListener;
 import android.net.wifi.IPnoScanResultsCallback;
 import android.net.wifi.IScanResultsCallback;
@@ -47,11 +51,15 @@ import android.net.wifi.ISubsystemRestartCallback;
 import android.net.wifi.ISuggestionConnectionStatusListener;
 import android.net.wifi.ISuggestionUserApprovalStatusListener;
 import android.net.wifi.ITrafficStateCallback;
+import android.net.wifi.ITwtCallback;
+import android.net.wifi.ITwtCapabilitiesListener;
+import android.net.wifi.ITwtStatsListener;
 import android.net.wifi.IWifiBandsListener;
 import android.net.wifi.IWifiConnectedNetworkScorer;
 import android.net.wifi.IWifiLowLatencyLockListener;
 import android.net.wifi.IWifiNetworkSelectionConfigListener;
 import android.net.wifi.IWifiVerboseLoggingStatusChangedListener;
+import android.net.wifi.MscsParams;
 import android.net.wifi.QosPolicyParams;
 import android.net.wifi.ScanResult;
 import android.net.wifi.SoftApConfiguration;
@@ -63,12 +71,15 @@ import android.net.wifi.WifiNetworkSelectionConfig;
 import android.net.wifi.WifiNetworkSuggestion;
 import android.net.wifi.WifiSsid;
 
+import android.net.wifi.twt.TwtRequest;
+
 import android.os.Bundle;
 import android.os.Messenger;
 import android.os.ResultReceiver;
 import android.os.WorkSource;
 
 import com.android.modules.utils.ParceledListSlice;
+import com.android.modules.utils.StringParceledListSlice;
 
 /**
  * Interface that allows controlling and querying Wi-Fi connectivity.
@@ -101,13 +112,13 @@ interface IWifiManager
 
     Map getAllMatchingFqdnsForScanResults(in List<ScanResult> scanResult);
 
-    void setSsidsAllowlist(String packageName, in List<WifiSsid> ssids);
+    void setSsidsAllowlist(String packageName, in ParceledListSlice<WifiSsid> ssids);
 
-    List getSsidsAllowlist(String packageName);
+    ParceledListSlice getSsidsAllowlist(String packageName);
 
-    Map getMatchingOsuProviders(in List<ScanResult> scanResult);
+    Map getMatchingOsuProviders(in ParceledListSlice<ScanResult> scanResult);
 
-    Map getMatchingPasspointConfigsForOsuProviders(in List<OsuProvider> osuProviders);
+    Map getMatchingPasspointConfigsForOsuProviders(in ParceledListSlice<OsuProvider> osuProviders);
 
     int addOrUpdateNetwork(in WifiConfiguration config, String packageName, in Bundle extras);
 
@@ -117,9 +128,9 @@ interface IWifiManager
 
     boolean removePasspointConfiguration(in String fqdn, String packageName);
 
-    List<PasspointConfiguration> getPasspointConfigurations(in String packageName);
+    ParceledListSlice<PasspointConfiguration> getPasspointConfigurations(in String packageName);
 
-    List<WifiConfiguration> getWifiConfigsForPasspointProfiles(in List<String> fqdnList);
+    ParceledListSlice<WifiConfiguration> getWifiConfigsForPasspointProfiles(in StringParceledListSlice fqdnList);
 
     void queryPasspointIcon(long bssid, String fileName);
 
@@ -147,9 +158,11 @@ interface IWifiManager
 
     boolean startScan(String packageName, String featureId);
 
-    List<ScanResult> getScanResults(String callingPackage, String callingFeatureId);
+    ParceledListSlice getScanResults(String callingPackage, String callingFeatureId);
 
     void getChannelData(in IListListener listener, String packageName, in Bundle extras);
+
+    void getBssidBlocklist(in ParceledListSlice<WifiSsid> ssids, in IMacAddressListListener listener);
 
     boolean disconnect(String packageName);
 
@@ -198,9 +211,9 @@ interface IWifiManager
 
     boolean isScanAlwaysAvailable();
 
-    boolean acquireWifiLock(IBinder lock, int lockType, String tag, in WorkSource ws);
+    boolean acquireWifiLock(IBinder lock, int lockType, String tag, in WorkSource ws, in String packageName, in Bundle extras);
 
-    void updateWifiLockWorkSource(IBinder lock, in WorkSource ws);
+    void updateWifiLockWorkSource(IBinder lock, in WorkSource ws, in String packageName, in Bundle extras);
 
     boolean releaseWifiLock(IBinder lock);
 
@@ -225,6 +238,8 @@ interface IWifiManager
     boolean startSoftAp(in WifiConfiguration wifiConfig, String packageName);
 
     boolean startTetheredHotspot(in SoftApConfiguration softApConfig, String packageName);
+
+    void startTetheredHotspotRequest(in TetheringRequest request, in ISoftApCallback callback, String packageName);
 
     boolean stopSoftAp();
 
@@ -318,12 +333,12 @@ interface IWifiManager
 
     void unregisterNetworkRequestMatchCallback(in INetworkRequestMatchCallback callback);
 
-    int addNetworkSuggestions(in List<WifiNetworkSuggestion> networkSuggestions, in String packageName,
+    int addNetworkSuggestions(in ParceledListSlice<WifiNetworkSuggestion> networkSuggestions, in String packageName,
         in String featureId);
 
-    int removeNetworkSuggestions(in List<WifiNetworkSuggestion> networkSuggestions, in String packageName, int action);
+    int removeNetworkSuggestions(in ParceledListSlice<WifiNetworkSuggestion> networkSuggestions, in String packageName, int action);
 
-    List<WifiNetworkSuggestion> getNetworkSuggestions(in String packageName);
+    ParceledListSlice<WifiNetworkSuggestion> getNetworkSuggestions(in String packageName);
 
     String[] getFactoryMacAddresses();
 
@@ -342,7 +357,7 @@ interface IWifiManager
 
     void updateWifiUsabilityScore(int seqNum, int score, int predictionHorizonSec);
 
-    oneway void connect(in WifiConfiguration config, int netId, in IActionListener listener, in String packageName);
+    oneway void connect(in WifiConfiguration config, int netId, in IActionListener listener, in String packageName, in Bundle extras);
 
     oneway void save(in WifiConfiguration config, in IActionListener listener, in String packageName);
 
@@ -362,13 +377,15 @@ interface IWifiManager
 
     int calculateSignalLevel(int rssi);
 
-    List<WifiConfiguration> getWifiConfigForMatchedNetworkSuggestionsSharedWithUser(in List<ScanResult> scanResults);
+    ParceledListSlice<WifiConfiguration> getWifiConfigForMatchedNetworkSuggestionsSharedWithUser(in ParceledListSlice<ScanResult> scanResults);
 
     boolean setWifiConnectedNetworkScorer(in IBinder binder, in IWifiConnectedNetworkScorer scorer);
 
     void clearWifiConnectedNetworkScorer();
 
     void setExternalPnoScanRequest(in IBinder binder, in IPnoScanResultsCallback callback, in List<WifiSsid> ssids, in int[] frequencies, String packageName, String featureId);
+
+    void setPnoScanEnabled(boolean enabled, boolean enablePnoScanAfterWifiToggle, String packageName);
 
     void clearExternalPnoScanRequest();
 
@@ -377,13 +394,13 @@ interface IWifiManager
     /**
      * Return the Map of {@link WifiNetworkSuggestion} and the list of <ScanResult>
      */
-    Map getMatchingScanResults(in List<WifiNetworkSuggestion> networkSuggestions, in List<ScanResult> scanResults, String callingPackage, String callingFeatureId);
+    Map getMatchingScanResults(in ParceledListSlice<WifiNetworkSuggestion> networkSuggestions, in ParceledListSlice<ScanResult> scanResults, String callingPackage, String callingFeatureId);
 
     void setScanThrottleEnabled(boolean enable);
 
     boolean isScanThrottleEnabled();
 
-    Map getAllMatchingPasspointProfilesForScanResults(in List<ScanResult> scanResult);
+    Map getAllMatchingPasspointProfilesForScanResults(in ParceledListSlice<ScanResult> scanResult);
 
     void setAutoWakeupEnabled(boolean enable);
 
@@ -427,7 +444,7 @@ interface IWifiManager
 
     void notifyMinimumRequiredWifiSecurityLevelChanged(int level);
 
-    void notifyWifiSsidPolicyChanged(int policyType, in List<WifiSsid> ssids);
+    void notifyWifiSsidPolicyChanged(int policyType, in ParceledListSlice<WifiSsid> ssids);
 
     String[] getOemPrivilegedWifiAdminPackages();
 
@@ -435,7 +452,7 @@ interface IWifiManager
 
     void replyToSimpleDialog(int dialogId, int reply);
 
-    void addCustomDhcpOptions(in WifiSsid ssid, in byte[] oui, in List<DhcpOption> options);
+    void addCustomDhcpOptions(in WifiSsid ssid, in byte[] oui, in ParceledListSlice<DhcpOption> options);
 
     void removeCustomDhcpOptions(in WifiSsid ssid, in byte[] oui);
 
@@ -443,7 +460,7 @@ interface IWifiManager
 
     int getMaxNumberOfChannelsPerRequest();
 
-    void addQosPolicies(in List<QosPolicyParams> policyParamsList, in IBinder binder, String packageName, in IListListener callback);
+    void addQosPolicies(in ParceledListSlice<QosPolicyParams> policyParamsList, in IBinder binder, String packageName, in IListListener callback);
 
     void removeQosPolicies(in int[] policyIdList, String packageName);
 
@@ -466,4 +483,40 @@ interface IWifiManager
     void getMaxMloStrLinkCount(in IIntegerListener listener, in Bundle extras);
 
     void getSupportedSimultaneousBandCombinations(in IWifiBandsListener listener, in Bundle extras);
+
+    void setWepAllowed(boolean isAllowed);
+
+    void queryWepAllowed(in IBooleanListener listener);
+
+    void enableMscs(in MscsParams mscsParams);
+
+    void disableMscs();
+
+    void setSendDhcpHostnameRestriction(String packageName, int restriction);
+
+    void querySendDhcpHostnameRestriction(String packageName, in IIntegerListener listener);
+
+    void setPerSsidRoamingMode(in WifiSsid ssid, int roamingMode, String packageName);
+
+    void removePerSsidRoamingMode(in WifiSsid ssid, String packageName);
+
+    void getPerSsidRoamingModes(String packageName,in IMapListener listener);
+
+    void getTwtCapabilities(in ITwtCapabilitiesListener listener, in Bundle extras);
+
+    void setupTwtSession(in TwtRequest twtRequest, in ITwtCallback callback, in Bundle extras);
+
+    void getStatsTwtSession(in int sessionId, in ITwtStatsListener listener, in Bundle extras);
+
+    void teardownTwtSession(in int sessionId, in Bundle extras);
+
+    void setD2dAllowedWhenInfraStaDisabled(boolean isAllowed);
+
+    void queryD2dAllowedWhenInfraStaDisabled(in IBooleanListener listener);
+
+    void retrieveWifiBackupData(in IByteArrayListener listener);
+
+    void restoreWifiBackupData(in byte[] data);
+
+    boolean isPnoSupported();
 }

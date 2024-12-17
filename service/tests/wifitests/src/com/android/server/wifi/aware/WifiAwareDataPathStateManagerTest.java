@@ -44,6 +44,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import android.Manifest;
+import android.app.StatsManager;
 import android.app.test.TestAlarmManager;
 import android.content.Context;
 import android.content.Intent;
@@ -84,23 +85,26 @@ import android.os.PowerManager;
 import android.os.Process;
 import android.os.UserHandle;
 import android.os.test.TestLooper;
-import android.util.LocalLog;
 
 import androidx.test.filters.SmallTest;
 
 import com.android.modules.utils.build.SdkLevel;
 import com.android.server.wifi.Clock;
+import com.android.server.wifi.DeviceConfigFacade;
 import com.android.server.wifi.HalDeviceManager;
 import com.android.server.wifi.InterfaceConflictManager;
 import com.android.server.wifi.MockResources;
 import com.android.server.wifi.WifiBaseTest;
+import com.android.server.wifi.WifiGlobals;
 import com.android.server.wifi.WifiInjector;
+import com.android.server.wifi.WifiSettingsConfigStore;
 import com.android.server.wifi.aware.WifiAwareDataPathStateManager.WifiAwareNetworkAgent;
 import com.android.server.wifi.hal.WifiNanIface.NanDataPathChannelCfg;
 import com.android.server.wifi.hal.WifiNanIface.NanStatusCode;
 import com.android.server.wifi.util.NetdWrapper;
 import com.android.server.wifi.util.WifiPermissionsUtil;
 import com.android.server.wifi.util.WifiPermissionsWrapper;
+import com.android.wifi.flags.FeatureFlags;
 import com.android.wifi.resources.R;
 
 import org.junit.After;
@@ -158,12 +162,16 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
     @Mock private PowerManager mMockPowerManager;
     @Mock private WifiInjector mWifiInjector;
     @Mock private PairingConfigManager mPairingConfigManager;
+    @Mock private StatsManager mStatsManager;
+    @Mock private DeviceConfigFacade mDeviceConfigFacade;
+    @Mock private FeatureFlags mFeatureFlags;
+    @Mock private WifiSettingsConfigStore mWifiSettingsConfigStore;
+    @Mock private WifiGlobals mWifiGlobals;
 
     @Rule
     public ErrorCollector collector = new ErrorCollector();
     private MockResources mResources;
     private Bundle mExtras = new Bundle();
-    private LocalLog mLocalLog = new LocalLog(512);
 
     /**
      * Initialize mocks.
@@ -187,6 +195,12 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         when(mMockContext.getSystemServiceName(PowerManager.class)).thenReturn(
                 Context.POWER_SERVICE);
         when(mMockContext.getSystemService(PowerManager.class)).thenReturn(mMockPowerManager);
+        when(mMockContext.getSystemService(StatsManager.class)).thenReturn(mStatsManager);
+        mResources = new MockResources();
+        mResources.setBoolean(R.bool.config_wifiAllowMultipleNetworksOnSameAwareNdi, false);
+        mResources.setBoolean(R.bool.config_wifiAwareNdpSecurityUpdateOnSameNdi, false);
+        mResources.setInteger(R.integer.config_wifiConfigurationWifiRunnerThresholdInMs, 4000);
+        when(mMockContext.getResources()).thenReturn(mResources);
 
         when(mInterfaceConflictManager.manageInterfaceConflictForStateMachine(any(), any(), any(),
                 any(), any(), eq(HalDeviceManager.HDM_CREATE_IFACE_NAN), any(), anyBoolean()))
@@ -201,15 +215,17 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
         if (SdkLevel.isAtLeastS()) {
             when(mWifiPermissionsUtil.getWifiCallerType(any())).thenReturn(6);
         }
-        when(mWifiInjector.getWifiAwareLocalLog()).thenReturn(mLocalLog);
-
+        when(mWifiInjector.getDeviceConfigFacade()).thenReturn(mDeviceConfigFacade);
+        when(mDeviceConfigFacade.getFeatureFlags()).thenReturn(mFeatureFlags);
+        when(mWifiInjector.getSettingsConfigStore()).thenReturn(mWifiSettingsConfigStore);
+        when(mWifiInjector.getWifiGlobals()).thenReturn(mWifiGlobals);
         mDut = new WifiAwareStateManager(mWifiInjector, mPairingConfigManager);
         mDut.setNative(mMockNativeManager, mMockNative);
         mDut.start(mMockContext, mMockLooper.getLooper(), mAwareMetricsMock,
                 mWifiPermissionsUtil, mPermissionsWrapperMock, mClock, mMockNetdWrapper,
                 mInterfaceConflictManager);
         mDut.startLate();
-        mDut.enableVerboseLogging(true, true);
+        mDut.enableVerboseLogging(true, true , true);
         mMockLooper.dispatchAll();
 
         when(mMockNetworkInterface.configureAgentProperties(any(), any(), any())).thenReturn(true);
@@ -220,11 +236,6 @@ public class WifiAwareDataPathStateManagerTest extends WifiBaseTest {
 
         mDut.mDataPathMgr.mNetdWrapper = mMockNetdWrapper;
         mDut.mDataPathMgr.mNiWrapper = mMockNetworkInterface;
-
-        mResources = new MockResources();
-        mResources.setBoolean(R.bool.config_wifiAllowMultipleNetworksOnSameAwareNdi, false);
-        mResources.setBoolean(R.bool.config_wifiAwareNdpSecurityUpdateOnSameNdi, false);
-        when(mMockContext.getResources()).thenReturn(mResources);
     }
 
     /**
